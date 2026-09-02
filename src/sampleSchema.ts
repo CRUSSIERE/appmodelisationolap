@@ -5,6 +5,7 @@ export const sampleSchema: Schema = {
   fact: {
     id: 'fact-ventes',
     name: 'VENTES',
+    position: { x: 480, y: 500 },
     measures: [{ id: 'm-montant', name: 'montant' }],
   },
   dimensions: [

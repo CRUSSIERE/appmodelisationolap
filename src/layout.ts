@@ -2,7 +2,7 @@ import type { Dimension } from './types'
 
 export const DIM_WIDTH = 140
 export const DIM_HEIGHT = 48
-export const PARAM_RADIUS = 16
+export const PARAM_RADIUS = 6
 const COL_WIDTH = 100
 const ROW_HEIGHT = 64
 const WEAK_ATTR_STEP = 34
@@ -62,7 +62,13 @@ export function layoutDimension(dim: Dimension): DimensionLayout {
 
   const centerY = DIM_HEIGHT / 2
   const paramPos: Record<string, Point> = {}
+  const paramById = new Map(dim.parameters.map((p) => [p.id, p]))
   for (const [paramId, depth] of paramDepth) {
+    const override = paramById.get(paramId)?.position
+    if (override) {
+      paramPos[paramId] = override
+      continue
+    }
     const rows = paramRows.get(paramId) ?? [0]
     const avgRow = rows.reduce((a, b) => a + b, 0) / rows.length
     paramPos[paramId] = {
@@ -76,6 +82,15 @@ export function layoutDimension(dim: Dimension): DimensionLayout {
     const base = paramPos[param.id]
     if (!base) continue
     param.weakAttributes.forEach((wa, i) => {
+      if (wa.position) {
+        weakAttrPos[`${param.id}:${wa.id}`] = {
+          x: wa.position.x,
+          y: wa.position.y,
+          labelX: wa.position.x + 6,
+          labelY: wa.position.y - 4,
+        }
+        return
+      }
       const dx = WEAK_ATTR_STEP + i * 8
       const dy = -(WEAK_ATTR_STEP + i * WEAK_ATTR_STEP * 0.6)
       weakAttrPos[`${param.id}:${wa.id}`] = {
@@ -89,6 +104,10 @@ export function layoutDimension(dim: Dimension): DimensionLayout {
 
   const hierarchyChipPos: Record<string, Point> = {}
   dim.hierarchies.forEach((h) => {
+    if (h.chipPosition) {
+      hierarchyChipPos[h.id] = h.chipPosition
+      return
+    }
     if (h.path.length < 1) return
     const p0 = paramPos[h.path[0]]
     const p1 = paramPos[h.path[1] ?? h.path[0]]
@@ -102,11 +121,21 @@ export function layoutDimension(dim: Dimension): DimensionLayout {
   const rows = [...paramRows.values()].flat()
   const minRow = Math.min(0, ...rows)
   const maxRow = Math.max(0, ...rows)
-  const height = Math.max(
+  let height = Math.max(
     DIM_HEIGHT,
     (maxRow - minRow) * ROW_HEIGHT + DIM_HEIGHT + WEAK_ATTR_STEP * 2,
   )
-  const width = DIM_WIDTH + maxDepth * COL_WIDTH + WEAK_ATTR_STEP * 3
+  let width = DIM_WIDTH + maxDepth * COL_WIDTH + WEAK_ATTR_STEP * 3
+
+  // manual overrides can land outside the auto-computed bbox — grow to fit
+  for (const p of Object.values(paramPos)) {
+    width = Math.max(width, p.x + WEAK_ATTR_STEP)
+    height = Math.max(height, p.y + WEAK_ATTR_STEP)
+  }
+  for (const wa of Object.values(weakAttrPos)) {
+    width = Math.max(width, wa.x + WEAK_ATTR_STEP)
+    height = Math.max(height, wa.y + WEAK_ATTR_STEP)
+  }
 
   return { paramPos, weakAttrPos, hierarchyChipPos, width, height }
 }

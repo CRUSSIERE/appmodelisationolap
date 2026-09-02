@@ -8,7 +8,18 @@ export type Action =
   | { type: 'MOVE_DIMENSION'; dimId: string; x: number; y: number }
   | { type: 'DELETE_DIMENSION'; dimId: string }
   | { type: 'RENAME_DIMENSION'; dimId: string; name: string }
+  | { type: 'MOVE_FACT'; x: number; y: number }
   | { type: 'RENAME_FACT'; name: string }
+  | { type: 'MOVE_PARAMETER'; dimId: string; paramId: string; x: number; y: number }
+  | {
+      type: 'MOVE_WEAK_ATTRIBUTE'
+      dimId: string
+      paramId: string
+      weakAttrId: string
+      x: number
+      y: number
+    }
+  | { type: 'MOVE_HIERARCHY_CHIP'; dimId: string; hierarchyId: string; x: number; y: number }
   | { type: 'ADD_MEASURE' }
   | { type: 'RENAME_MEASURE'; measureId: string; name: string }
   | { type: 'DELETE_MEASURE'; measureId: string }
@@ -114,6 +125,12 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         name: action.name,
       }))
 
+    case 'MOVE_FACT':
+      return {
+        ...schema,
+        fact: { ...schema.fact, position: { x: action.x, y: action.y } },
+      }
+
     case 'RENAME_FACT':
       return { ...schema, fact: { ...schema.fact, name: action.name } }
 
@@ -156,6 +173,14 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         updateParam(d, action.paramId, (p) => ({ ...p, name: action.name })),
       )
 
+    case 'MOVE_PARAMETER':
+      return updateDim(schema, action.dimId, (d) =>
+        updateParam(d, action.paramId, (p) => ({
+          ...p,
+          position: { x: action.x, y: action.y },
+        })),
+      )
+
     case 'ADD_WEAK_ATTRIBUTE':
       return updateDim(schema, action.dimId, (d) =>
         updateParam(d, action.paramId, (p) => ({
@@ -173,6 +198,18 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
           ...p,
           weakAttributes: p.weakAttributes.map((wa) =>
             wa.id === action.weakAttrId ? { ...wa, name: action.name } : wa,
+          ),
+        })),
+      )
+
+    case 'MOVE_WEAK_ATTRIBUTE':
+      return updateDim(schema, action.dimId, (d) =>
+        updateParam(d, action.paramId, (p) => ({
+          ...p,
+          weakAttributes: p.weakAttributes.map((wa) =>
+            wa.id === action.weakAttrId
+              ? { ...wa, position: { x: action.x, y: action.y } }
+              : wa,
           ),
         })),
       )
@@ -232,6 +269,14 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         updateHierarchy(d, action.hierarchyId, (h) => ({
           ...h,
           name: action.name,
+        })),
+      )
+
+    case 'MOVE_HIERARCHY_CHIP':
+      return updateDim(schema, action.dimId, (d) =>
+        updateHierarchy(d, action.hierarchyId, (h) => ({
+          ...h,
+          chipPosition: { x: action.x, y: action.y },
         })),
       )
 

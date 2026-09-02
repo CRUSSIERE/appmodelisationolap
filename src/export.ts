@@ -25,6 +25,15 @@ function isNamedItem(v: unknown): v is { id: string; name: string } {
   )
 }
 
+function isPoint(v: unknown): v is { x: number; y: number } {
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    typeof (v as Record<string, unknown>).x === 'number' &&
+    typeof (v as Record<string, unknown>).y === 'number'
+  )
+}
+
 /** Structural check only — catches shapes that would otherwise crash deep in
  * rendering (e.g. `dimensions` not an array) with a message naming the
  * problem field, instead of a generic "Cannot read properties of undefined". */
@@ -40,13 +49,17 @@ function assertValidSchema(data: unknown): asserts data is Schema {
   if (!Array.isArray(fact.measures) || !fact.measures.every(isNamedItem)) {
     fail('"fact.measures" doit être un tableau de {id, name}')
   }
+  // position is optional here (older exports predate it) — normalizeSchema
+  // backfills a default, but if present it must be well-formed
+  if (fact.position !== undefined && !isPoint(fact.position)) {
+    fail('"fact.position" doit être {x, y}')
+  }
 
   if (!Array.isArray(s.dimensions)) fail('"dimensions" doit être un tableau')
   ;(s.dimensions as unknown[]).forEach((dim, i) => {
     if (!isNamedItem(dim)) fail(`dimensions[${i}] est invalide`)
     const d = dim as Record<string, unknown>
-    const pos = d.position as Record<string, unknown> | undefined
-    if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') {
+    if (!isPoint(d.position)) {
       fail(`dimensions[${i}].position doit être {x, y}`)
     }
     if (typeof d.keyParameterId !== 'string') {
@@ -78,7 +91,16 @@ function assertValidSchema(data: unknown): asserts data is Schema {
 export function parseImportedJson(text: string): Schema {
   const data = JSON.parse(text)
   assertValidSchema(data)
-  return data
+  return normalizeSchema(data)
+}
+
+/** backfills fields added after older exports were written, so old files keep loading */
+function normalizeSchema(schema: Schema): Schema {
+  if (schema.fact.position) return schema
+  const xs = schema.dimensions.map((d) => d.position.x)
+  const x = xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 400
+  const y = Math.max(500, ...schema.dimensions.map((d) => d.position.y + 300))
+  return { ...schema, fact: { ...schema.fact, position: { x, y } } }
 }
 
 type RasterFormat = 'png' | 'jpeg'

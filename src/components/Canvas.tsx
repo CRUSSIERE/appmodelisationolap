@@ -5,6 +5,8 @@ import type { Action } from '../state'
 import type { Dimension, Schema } from '../types'
 
 const HIERARCHY_COLORS = ['#2563eb', '#b45309', '#0d9488', '#be185d', '#4d7c0f']
+/** pointer must move this many px before a pointerdown counts as a drag, not a click */
+const DRAG_THRESHOLD = 3
 
 interface PopoverState {
   dimId: string
@@ -20,6 +22,22 @@ interface EditorState {
   onSubmit: (value: string) => void
 }
 
+/** offsets are in the coordinate space the dragged element is positioned in:
+ * global for 'dim'/'fact', local to the dimension for the rest */
+type DragState =
+  | { kind: 'dim'; dimId: string; offsetX: number; offsetY: number }
+  | { kind: 'fact'; offsetX: number; offsetY: number }
+  | { kind: 'param'; dimId: string; paramId: string; offsetX: number; offsetY: number }
+  | {
+      kind: 'weakAttr'
+      dimId: string
+      paramId: string
+      weakAttrId: string
+      offsetX: number
+      offsetY: number
+    }
+  | { kind: 'chip'; dimId: string; hierarchyId: string; offsetX: number; offsetY: number }
+
 export function Canvas({
   schema,
   dispatch,
@@ -31,11 +49,9 @@ export function Canvas({
 }) {
   const [popover, setPopover] = useState<PopoverState | null>(null)
   const [editor, setEditor] = useState<EditorState | null>(null)
-  const dragRef = useRef<{
-    dimId: string
-    offsetX: number
-    offsetY: number
-  } | null>(null)
+  const dragRef = useRef<DragState | null>(null)
+  const movedRef = useRef(false)
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null)
 
   const layouts = useMemo(() => {
     const map = new Map<string, ReturnType<typeof layoutDimension>>()
@@ -51,17 +67,15 @@ export function Canvas({
       right = Math.max(right, dim.position.x + l.width + 200)
       bottom = Math.max(bottom, dim.position.y + l.height + 400)
     }
+    right = Math.max(right, schema.fact.position.x + 400)
+    bottom = Math.max(bottom, schema.fact.position.y + 200)
     return { width: right, height: bottom }
-  }, [schema.dimensions, layouts])
+  }, [schema.dimensions, schema.fact.position, layouts])
 
   const factWidth = 170
   const factHeight = 56 + schema.fact.measures.length * 20
-  const dimsX = schema.dimensions.map((d) => d.position.x + DIM_WIDTH / 2)
-  const factCenterX = dimsX.length
-    ? dimsX.reduce((a, b) => a + b, 0) / dimsX.length
-    : bounds.width / 2
-  const factX = factCenterX - factWidth / 2
-  const factY = bounds.height - factHeight - 80
+  const factX = schema.fact.position.x
+  const factY = schema.fact.position.y
 
   function toLocalPoint(clientX: number, clientY: number) {
     const svg = svgRef.current
@@ -75,31 +89,147 @@ export function Canvas({
     dispatch({ type: 'ADD_DIMENSION', x: x - DIM_WIDTH / 2, y: y - DIM_HEIGHT / 2 })
   }
 
-  function startDrag(dim: Dimension, e: React.PointerEvent) {
+  function beginDrag(state: DragState, e: React.PointerEvent) {
     e.stopPropagation()
-    const { x, y } = toLocalPoint(e.clientX, e.clientY)
-    dragRef.current = {
-      dimId: dim.id,
-      offsetX: x - dim.position.x,
-      offsetY: y - dim.position.y,
-    }
+    movedRef.current = false
+    dragRef.current = state
+    dragStartRef.current = toLocalPoint(e.clientX, e.clientY)
     ;(e.target as Element).setPointerCapture(e.pointerId)
+  }
+
+  function startDrag(dim: Dimension, e: React.PointerEvent) {
+    const { x, y } = toLocalPoint(e.clientX, e.clientY)
+    beginDrag(
+      { kind: 'dim', dimId: dim.id, offsetX: x - dim.position.x, offsetY: y - dim.position.y },
+      e,
+    )
+  }
+
+  function startFactDrag(e: React.PointerEvent) {
+    const { x, y } = toLocalPoint(e.clientX, e.clientY)
+    beginDrag(
+      {
+        kind: 'fact',
+        offsetX: x - schema.fact.position.x,
+        offsetY: y - schema.fact.position.y,
+      },
+      e,
+    )
+  }
+
+  function startParamDrag(dim: Dimension, paramId: string, e: React.PointerEvent) {
+    const { x, y } = toLocalPoint(e.clientX, e.clientY)
+    const cur = layouts.get(dim.id)!.paramPos[paramId]
+    beginDrag(
+      {
+        kind: 'param',
+        dimId: dim.id,
+        paramId,
+        offsetX: x - dim.position.x - cur.x,
+        offsetY: y - dim.position.y - cur.y,
+      },
+      e,
+    )
+  }
+
+  function startWeakAttrDrag(
+    dim: Dimension,
+    paramId: string,
+    weakAttrId: string,
+    e: React.PointerEvent,
+  ) {
+    const { x, y } = toLocalPoint(e.clientX, e.clientY)
+    const cur = layouts.get(dim.id)!.weakAttrPos[`${paramId}:${weakAttrId}`]
+    beginDrag(
+      {
+        kind: 'weakAttr',
+        dimId: dim.id,
+        paramId,
+        weakAttrId,
+        offsetX: x - dim.position.x - cur.x,
+        offsetY: y - dim.position.y - cur.y,
+      },
+      e,
+    )
+  }
+
+  function startChipDrag(dim: Dimension, hierarchyId: string, e: React.PointerEvent) {
+    const { x, y } = toLocalPoint(e.clientX, e.clientY)
+    const cur = layouts.get(dim.id)!.hierarchyChipPos[hierarchyId]
+    beginDrag(
+      {
+        kind: 'chip',
+        dimId: dim.id,
+        hierarchyId,
+        offsetX: x - dim.position.x - cur.x,
+        offsetY: y - dim.position.y - cur.y,
+      },
+      e,
+    )
   }
 
   function onDrag(e: React.PointerEvent) {
     const drag = dragRef.current
     if (!drag) return
     const { x, y } = toLocalPoint(e.clientX, e.clientY)
-    dispatch({
-      type: 'MOVE_DIMENSION',
-      dimId: drag.dimId,
-      x: x - drag.offsetX,
-      y: y - drag.offsetY,
-    })
+
+    if (!movedRef.current) {
+      const start = dragStartRef.current
+      const dist = start ? Math.hypot(x - start.x, y - start.y) : Infinity
+      if (dist < DRAG_THRESHOLD) return
+      movedRef.current = true
+    }
+
+    switch (drag.kind) {
+      case 'dim':
+        dispatch({ type: 'MOVE_DIMENSION', dimId: drag.dimId, x: x - drag.offsetX, y: y - drag.offsetY })
+        break
+      case 'fact':
+        dispatch({ type: 'MOVE_FACT', x: x - drag.offsetX, y: y - drag.offsetY })
+        break
+      case 'param': {
+        const dim = schema.dimensions.find((d) => d.id === drag.dimId)
+        if (!dim) return
+        dispatch({
+          type: 'MOVE_PARAMETER',
+          dimId: drag.dimId,
+          paramId: drag.paramId,
+          x: x - dim.position.x - drag.offsetX,
+          y: y - dim.position.y - drag.offsetY,
+        })
+        break
+      }
+      case 'weakAttr': {
+        const dim = schema.dimensions.find((d) => d.id === drag.dimId)
+        if (!dim) return
+        dispatch({
+          type: 'MOVE_WEAK_ATTRIBUTE',
+          dimId: drag.dimId,
+          paramId: drag.paramId,
+          weakAttrId: drag.weakAttrId,
+          x: x - dim.position.x - drag.offsetX,
+          y: y - dim.position.y - drag.offsetY,
+        })
+        break
+      }
+      case 'chip': {
+        const dim = schema.dimensions.find((d) => d.id === drag.dimId)
+        if (!dim) return
+        dispatch({
+          type: 'MOVE_HIERARCHY_CHIP',
+          dimId: drag.dimId,
+          hierarchyId: drag.hierarchyId,
+          x: x - dim.position.x - drag.offsetX,
+          y: y - dim.position.y - drag.offsetY,
+        })
+        break
+      }
+    }
   }
 
   function endDrag() {
     dragRef.current = null
+    dragStartRef.current = null
   }
 
   function startRename(
@@ -113,6 +243,10 @@ export function Canvas({
 
   function openPopover(dim: Dimension, paramId: string, e: React.MouseEvent) {
     e.stopPropagation()
+    if (movedRef.current) {
+      movedRef.current = false
+      return
+    }
     const svg = svgRef.current
     const l = layouts.get(dim.id)!
     const p = l.paramPos[paramId]
@@ -145,16 +279,12 @@ export function Canvas({
           onClick={onBackgroundClick}
         />
 
-        {/* fact-to-key connections, drawn first so they sit behind everything */}
+        {/* fact-to-dimension connections, drawn first so they sit behind everything */}
         {schema.dimensions.map((dim) => {
-          const key = dim.parameters.find((p) => p.id === dim.keyParameterId)
-          if (!key) return null
-          const l = layouts.get(dim.id)!
-          const kp = l.paramPos[dim.keyParameterId]
-          const keyX = dim.position.x + kp.x
-          const keyY = dim.position.y + kp.y
+          const dimTargetX = dim.position.x + DIM_WIDTH / 2
+          const dimTargetY = dim.position.y + DIM_HEIGHT
           const factTopX = Math.min(
-            Math.max(keyX, factX),
+            Math.max(dimTargetX, factX),
             factX + factWidth,
           )
           return (
@@ -162,8 +292,8 @@ export function Canvas({
               key={`link-${dim.id}`}
               x1={factTopX}
               y1={factY}
-              x2={keyX}
-              y2={keyY}
+              x2={dimTargetX}
+              y2={dimTargetY}
               stroke="#94a3b8"
               strokeWidth={1.5}
             />
@@ -180,6 +310,8 @@ export function Canvas({
             fill="#1e293b"
             stroke="#0f172a"
             rx={2}
+            onPointerDown={startFactDrag}
+            className="cursor-move"
           />
           <text
             x={factX + factWidth / 2}
@@ -188,11 +320,13 @@ export function Canvas({
             fill="#ffffff"
             fontWeight={700}
             fontSize={14}
+            onPointerDown={startFactDrag}
             onDoubleClick={(e) =>
               startRename(e, schema.fact.name, (name) =>
                 dispatch({ type: 'RENAME_FACT', name }),
               )
             }
+            className="cursor-move select-none"
           >
             {schema.fact.name}
           </text>
@@ -251,6 +385,11 @@ export function Canvas({
               dim={dim}
               layout={l}
               onDragStart={(e) => startDrag(dim, e)}
+              onParamDragStart={(paramId, e) => startParamDrag(dim, paramId, e)}
+              onWeakAttrDragStart={(paramId, waId, e) =>
+                startWeakAttrDrag(dim, paramId, waId, e)
+              }
+              onChipDragStart={(hId, e) => startChipDrag(dim, hId, e)}
               onParamClick={(paramId, e) => openPopover(dim, paramId, e)}
               onRename={startRename}
               dispatch={dispatch}
@@ -313,6 +452,9 @@ function DimensionNode({
   dim,
   layout,
   onDragStart,
+  onParamDragStart,
+  onWeakAttrDragStart,
+  onChipDragStart,
   onParamClick,
   onRename,
   dispatch,
@@ -320,6 +462,13 @@ function DimensionNode({
   dim: Dimension
   layout: ReturnType<typeof layoutDimension>
   onDragStart: (e: React.PointerEvent) => void
+  onParamDragStart: (paramId: string, e: React.PointerEvent) => void
+  onWeakAttrDragStart: (
+    paramId: string,
+    weakAttrId: string,
+    e: React.PointerEvent,
+  ) => void
+  onChipDragStart: (hierarchyId: string, e: React.PointerEvent) => void
   onParamClick: (paramId: string, e: React.MouseEvent) => void
   onRename: (
     e: React.MouseEvent,
@@ -332,6 +481,19 @@ function DimensionNode({
 
   return (
     <g transform={`translate(${x},${y})`}>
+      {/* dimension box background, drawn first so it never paints over a
+          parameter's label (the key sits right on the box's right edge) */}
+      <rect
+        width={DIM_WIDTH}
+        height={DIM_HEIGHT}
+        fill="#ffffff"
+        stroke="#1e293b"
+        strokeWidth={1.5}
+        rx={2}
+        onPointerDown={onDragStart}
+        className="cursor-move"
+      />
+
       {/* DF lines between consecutive parameters of each hierarchy */}
       {dim.hierarchies.map((h) =>
         h.path.slice(0, -1).map((paramId, i) => {
@@ -366,6 +528,8 @@ function DimensionNode({
               height={18}
               rx={3}
               fill={color}
+              className="cursor-move"
+              onPointerDown={(e) => onChipDragStart(h.id, e)}
               onDoubleClick={(e) =>
                 onRename(e, h.name, (name) =>
                   dispatch({
@@ -429,6 +593,9 @@ function DimensionNode({
                 fontSize={11}
                 textDecoration="underline"
                 fill="#1e293b"
+                style={{ paintOrder: 'stroke', stroke: '#f8fafc', strokeWidth: 3 }}
+                className="cursor-move"
+                onPointerDown={(e) => onWeakAttrDragStart(p.id, wa.id, e)}
                 onDoubleClick={(e) =>
                   onRename(e, wa.name, (name) =>
                     dispatch({
@@ -472,12 +639,12 @@ function DimensionNode({
         const isKey = p.id === dim.keyParameterId
         return (
           <g key={p.id} transform={`translate(${pos.x},${pos.y})`}>
+            {/* larger invisible hit-area so the now-small ring stays easy to click/drag */}
             <circle
-              r={PARAM_RADIUS}
-              fill={isKey ? '#1e293b' : '#ffffff'}
-              stroke="#1e293b"
-              strokeWidth={isKey ? 0 : 1.5}
+              r={PARAM_RADIUS + 8}
+              fill="transparent"
               className="cursor-pointer"
+              onPointerDown={(e) => onParamDragStart(p.id, e)}
               onClick={(e) => onParamClick(p.id, e)}
               onDoubleClick={(e) =>
                 onRename(e, p.name, (name) =>
@@ -490,11 +657,20 @@ function DimensionNode({
                 )
               }
             />
+            <circle
+              r={PARAM_RADIUS}
+              fill="#ffffff"
+              stroke="#1e293b"
+              strokeWidth={isKey ? 2 : 1.5}
+              pointerEvents="none"
+            />
             <text
               y={PARAM_RADIUS + 13}
               textAnchor="middle"
               fontSize={11}
+              fontWeight={isKey ? 700 : 400}
               fill="#1e293b"
+              style={{ paintOrder: 'stroke', stroke: '#f8fafc', strokeWidth: 3 }}
               pointerEvents="none"
             >
               {p.name}
@@ -503,17 +679,7 @@ function DimensionNode({
         )
       })}
 
-      {/* dimension rectangle */}
-      <rect
-        width={DIM_WIDTH}
-        height={DIM_HEIGHT}
-        fill="#ffffff"
-        stroke="#1e293b"
-        strokeWidth={1.5}
-        rx={2}
-        onPointerDown={onDragStart}
-        className="cursor-move"
-      />
+      {/* dimension name + delete, drawn above the background rect */}
       <text
         x={DIM_WIDTH / 2}
         y={DIM_HEIGHT / 2 + 5}

@@ -1,6 +1,6 @@
 import type { Dispatch } from 'react'
 import type { Action } from '../state'
-import type { Schema } from '../types'
+import type { Dimension, Parameter, Schema } from '../types'
 import type { Warning } from '../validate'
 
 export function SidePanel({
@@ -77,32 +77,9 @@ export function SidePanel({
         <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
           Dimensions
         </h2>
-        <div className="space-y-2">
+        <div className="space-y-3">
           {schema.dimensions.map((dim) => (
-            <div key={dim.id} className="flex items-center gap-1">
-              <input
-                className="w-full rounded border border-slate-300 px-2 py-1"
-                value={dim.name}
-                onChange={(e) =>
-                  dispatch({
-                    type: 'RENAME_DIMENSION',
-                    dimId: dim.id,
-                    name: e.target.value,
-                  })
-                }
-              />
-              <button
-                type="button"
-                className="px-1 text-red-600"
-                onClick={() => {
-                  if (window.confirm(`Supprimer la dimension ${dim.name} ?`)) {
-                    dispatch({ type: 'DELETE_DIMENSION', dimId: dim.id })
-                  }
-                }}
-              >
-                ×
-              </button>
-            </div>
+            <DimensionPanel key={dim.id} dim={dim} dispatch={dispatch} />
           ))}
           {schema.dimensions.length === 0 && (
             <p className="text-xs text-slate-400">Aucune dimension.</p>
@@ -110,5 +87,191 @@ export function SidePanel({
         </div>
       </section>
     </aside>
+  )
+}
+
+function DimensionPanel({
+  dim,
+  dispatch,
+}: {
+  dim: Dimension
+  dispatch: Dispatch<Action>
+}) {
+  return (
+    <details className="rounded border border-slate-300 open:bg-slate-50" open>
+      <summary className="flex cursor-pointer list-none items-center gap-1 px-2 py-1.5">
+        <input
+          className="w-full rounded border border-slate-300 px-2 py-1 text-sm font-semibold"
+          value={dim.name}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) =>
+            dispatch({
+              type: 'RENAME_DIMENSION',
+              dimId: dim.id,
+              name: e.target.value,
+            })
+          }
+        />
+        <button
+          type="button"
+          className="px-1 text-red-600"
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            if (window.confirm(`Supprimer la dimension ${dim.name} ?`)) {
+              dispatch({ type: 'DELETE_DIMENSION', dimId: dim.id })
+            }
+          }}
+        >
+          ×
+        </button>
+      </summary>
+
+      <div className="space-y-2 border-t border-slate-200 px-2 py-2">
+        {dim.parameters.map((p) => (
+          <ParameterPanel key={p.id} dim={dim} param={p} dispatch={dispatch} />
+        ))}
+
+        <div>
+          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Hiérarchies
+          </h3>
+          <div className="space-y-1">
+            {dim.hierarchies.map((h) => (
+              <div key={h.id} className="flex items-center gap-1">
+                <input
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  value={h.name}
+                  onChange={(e) =>
+                    dispatch({
+                      type: 'RENAME_HIERARCHY',
+                      dimId: dim.id,
+                      hierarchyId: h.id,
+                      name: e.target.value,
+                    })
+                  }
+                />
+                <button
+                  type="button"
+                  className="px-1 text-xs text-blue-600 hover:underline"
+                  title="Ajouter un niveau au-dessus"
+                  onClick={() =>
+                    dispatch({
+                      type: 'ADD_LEVEL_ABOVE',
+                      dimId: dim.id,
+                      hierarchyId: h.id,
+                    })
+                  }
+                >
+                  + niveau
+                </button>
+                <button
+                  type="button"
+                  className="px-1 text-red-600"
+                  onClick={() =>
+                    dispatch({
+                      type: 'DELETE_HIERARCHY',
+                      dimId: dim.id,
+                      hierarchyId: h.id,
+                    })
+                  }
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="text-xs text-blue-600 hover:underline"
+              onClick={() => dispatch({ type: 'ADD_HIERARCHY', dimId: dim.id })}
+            >
+              + hiérarchie
+            </button>
+          </div>
+        </div>
+      </div>
+    </details>
+  )
+}
+
+function ParameterPanel({
+  dim,
+  param,
+  dispatch,
+}: {
+  dim: Dimension
+  param: Parameter
+  dispatch: Dispatch<Action>
+}) {
+  const isKey = param.id === dim.keyParameterId
+  return (
+    <div className="rounded border border-slate-200 bg-white p-1.5">
+      <div className="flex items-center gap-1">
+        <input
+          className="w-full rounded border border-slate-300 px-2 py-1 text-xs font-medium"
+          value={param.name}
+          onChange={(e) =>
+            dispatch({
+              type: 'RENAME_PARAMETER',
+              dimId: dim.id,
+              paramId: param.id,
+              name: e.target.value,
+            })
+          }
+        />
+        {isKey && (
+          <span className="whitespace-nowrap text-[10px] uppercase text-slate-400">
+            clé
+          </span>
+        )}
+      </div>
+
+      <div className="mt-1 space-y-1 pl-2">
+        {param.weakAttributes.map((wa) => (
+          <div key={wa.id} className="flex items-center gap-1">
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+              value={wa.name}
+              onChange={(e) =>
+                dispatch({
+                  type: 'RENAME_WEAK_ATTRIBUTE',
+                  dimId: dim.id,
+                  paramId: param.id,
+                  weakAttrId: wa.id,
+                  name: e.target.value,
+                })
+              }
+            />
+            <button
+              type="button"
+              className="px-1 text-red-600"
+              onClick={() =>
+                dispatch({
+                  type: 'DELETE_WEAK_ATTRIBUTE',
+                  dimId: dim.id,
+                  paramId: param.id,
+                  weakAttrId: wa.id,
+                })
+              }
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          className="text-xs text-blue-600 hover:underline"
+          onClick={() =>
+            dispatch({
+              type: 'ADD_WEAK_ATTRIBUTE',
+              dimId: dim.id,
+              paramId: param.id,
+            })
+          }
+        >
+          + attribut
+        </button>
+      </div>
+    </div>
   )
 }
