@@ -1,16 +1,23 @@
-import type { Dispatch } from 'react'
 import { exportJson, exportRaster, exportSvg, parseImportedJson } from '../export'
-import type { Action } from '../state'
+import type { SchemaDispatch } from '../state'
 import type { Schema } from '../types'
 
 export function Toolbar({
   schema,
   dispatch,
   svgRef,
+  undo,
+  redo,
+  canUndo,
+  canRedo,
 }: {
   schema: Schema
-  dispatch: Dispatch<Action>
+  dispatch: SchemaDispatch
   svgRef: React.RefObject<SVGSVGElement | null>
+  undo: () => void
+  redo: () => void
+  canUndo: boolean
+  canRedo: boolean
 }) {
   function onImportChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -51,6 +58,25 @@ export function Toolbar({
         }
       >
         + Dimension
+      </button>
+      <div className="mx-2 h-5 w-px bg-slate-300" />
+      <button
+        type="button"
+        className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+        onClick={undo}
+        disabled={!canUndo}
+        title="Annuler (Ctrl+Z)"
+      >
+        ↶ Annuler
+      </button>
+      <button
+        type="button"
+        className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+        onClick={redo}
+        disabled={!canRedo}
+        title="Rétablir (Ctrl+Y)"
+      >
+        ↷ Rétablir
       </button>
       <div className="mx-2 h-5 w-px bg-slate-300" />
       <button

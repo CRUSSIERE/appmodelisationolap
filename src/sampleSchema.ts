@@ -71,12 +71,18 @@ export const sampleSchema: Schema = {
           ],
         },
         { id: 'p-ville', name: 'ville', weakAttributes: [] },
+        { id: 'p-depart', name: 'depart', weakAttributes: [] },
         { id: 'p-pays', name: 'pays', weakAttributes: [] },
       ],
       hierarchies: [
         {
-          id: 'h-cli',
-          name: 'H_Cli',
+          id: 'h-cli-fr',
+          name: 'H_Fr',
+          path: ['p-codeC', 'p-ville', 'p-depart', 'p-pays'],
+        },
+        {
+          id: 'h-cli-non-fr',
+          name: 'H_Non_Fr',
           path: ['p-codeC', 'p-ville', 'p-pays'],
         },
       ],

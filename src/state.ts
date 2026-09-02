@@ -1,6 +1,9 @@
-import { useReducer } from 'react'
 import { makeId } from './ids'
 import type { Dimension, Hierarchy, Parameter, Schema } from './types'
+
+/** dispatch that accepts an optional coalesce key: consecutive dispatches
+ * sharing the same key merge into a single undo step (see history.ts) */
+export type SchemaDispatch = (action: Action, coalesceKey?: string) => void
 
 export type Action =
   | { type: 'IMPORT_SCHEMA'; schema: Schema }
@@ -43,6 +46,13 @@ export type Action =
   | { type: 'ADD_HIERARCHY'; dimId: string }
   | { type: 'RENAME_HIERARCHY'; dimId: string; hierarchyId: string; name: string }
   | { type: 'DELETE_HIERARCHY'; dimId: string; hierarchyId: string }
+  | { type: 'DUPLICATE_HIERARCHY'; dimId: string; hierarchyId: string }
+  | {
+      type: 'REMOVE_LEVEL_FROM_HIERARCHIES'
+      dimId: string
+      hierarchyIds: string[]
+      paramId: string
+    }
 
 function updateDim(
   schema: Schema,
@@ -290,11 +300,33 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         }),
       )
 
+    case 'DUPLICATE_HIERARCHY':
+      return updateDim(schema, action.dimId, (d) => {
+        const source = d.hierarchies.find((h) => h.id === action.hierarchyId)
+        if (!source) return d
+        const copy: Hierarchy = {
+          id: makeId('h'),
+          name: `${source.name}_copie`,
+          path: [...source.path],
+        }
+        return { ...d, hierarchies: [...d.hierarchies, copy] }
+      })
+
+    case 'REMOVE_LEVEL_FROM_HIERARCHIES': {
+      const targetIds = new Set(action.hierarchyIds)
+      return updateDim(schema, action.dimId, (d) =>
+        pruneOrphanParameters({
+          ...d,
+          hierarchies: d.hierarchies.map((h) =>
+            targetIds.has(h.id)
+              ? { ...h, path: h.path.filter((id) => id !== action.paramId) }
+              : h,
+          ),
+        }),
+      )
+    }
+
     default:
       return schema
   }
-}
-
-export function useSchema(initial: Schema) {
-  return useReducer(schemaReducer, initial)
 }

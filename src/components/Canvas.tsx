@@ -1,12 +1,31 @@
 import { useMemo, useRef, useState } from 'react'
-import type { Dispatch } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 import { DIM_HEIGHT, DIM_WIDTH, PARAM_RADIUS, layoutDimension } from '../layout'
-import type { Action } from '../state'
+import {
+  FACT_KEY,
+  dimKey,
+  edgeKey,
+  hierarchyKey,
+  measureKey,
+  paramKey,
+  selectOnly,
+  toggleInSelection,
+  weakAttrKey,
+} from '../selection'
+import type { SchemaDispatch } from '../state'
 import type { Dimension, Schema } from '../types'
 
 const HIERARCHY_COLORS = ['#2563eb', '#b45309', '#0d9488', '#be185d', '#4d7c0f']
+const SELECTED_COLOR = '#2563eb'
 /** pointer must move this many px before a pointerdown counts as a drag, not a click */
 const DRAG_THRESHOLD = 3
+
+interface Rect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
 
 interface PopoverState {
   dimId: string
@@ -23,7 +42,7 @@ interface EditorState {
 }
 
 /** offsets are in the coordinate space the dragged element is positioned in:
- * global for 'dim'/'fact', local to the dimension for the rest */
+ * global for 'dim'/'fact'/'marquee', local to the dimension for the rest */
 type DragState =
   | { kind: 'dim'; dimId: string; offsetX: number; offsetY: number }
   | { kind: 'fact'; offsetX: number; offsetY: number }
@@ -37,18 +56,34 @@ type DragState =
       offsetY: number
     }
   | { kind: 'chip'; dimId: string; hierarchyId: string; offsetX: number; offsetY: number }
+  | { kind: 'marquee'; additive: boolean; startX: number; startY: number }
+
+function rectsOverlap(a: Rect, b: Rect) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+}
+
+function pointInRect(px: number, py: number, r: Rect) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h
+}
 
 export function Canvas({
   schema,
   dispatch,
   svgRef,
+  selection,
+  setSelection,
+  commit,
 }: {
   schema: Schema
-  dispatch: Dispatch<Action>
+  dispatch: SchemaDispatch
   svgRef: React.RefObject<SVGSVGElement | null>
+  selection: Set<string>
+  setSelection: Dispatch<SetStateAction<Set<string>>>
+  commit: () => void
 }) {
   const [popover, setPopover] = useState<PopoverState | null>(null)
   const [editor, setEditor] = useState<EditorState | null>(null)
+  const [marqueeRect, setMarqueeRect] = useState<Rect | null>(null)
   const dragRef = useRef<DragState | null>(null)
   const movedRef = useRef(false)
   const dragStartRef = useRef<{ x: number; y: number } | null>(null)
@@ -84,9 +119,73 @@ export function Canvas({
     return { x: clientX - rect.left, y: clientY - rect.top }
   }
 
+  /** every selectable key whose element intersects `rect` (global coords) */
+  function collectInRect(rect: Rect): string[] {
+    const keys: string[] = []
+    if (rectsOverlap(rect, { x: factX, y: factY, w: factWidth, h: factHeight })) {
+      keys.push(FACT_KEY)
+      schema.fact.measures.forEach((m, i) => {
+        const my = factY + 42 + i * 20
+        if (pointInRect(factX + factWidth / 2, my, rect)) keys.push(measureKey(m.id))
+      })
+    }
+    for (const dim of schema.dimensions) {
+      const l = layouts.get(dim.id)!
+      const dimRect = { x: dim.position.x, y: dim.position.y, w: DIM_WIDTH, h: DIM_HEIGHT }
+      if (rectsOverlap(rect, dimRect)) keys.push(dimKey(dim.id))
+
+      for (const p of dim.parameters) {
+        const pos = l.paramPos[p.id]
+        if (pos && pointInRect(dim.position.x + pos.x, dim.position.y + pos.y, rect)) {
+          keys.push(paramKey(dim.id, p.id))
+        }
+        for (const wa of p.weakAttributes) {
+          const wp = l.weakAttrPos[`${p.id}:${wa.id}`]
+          if (wp && pointInRect(dim.position.x + wp.x, dim.position.y + wp.y, rect)) {
+            keys.push(weakAttrKey(dim.id, p.id, wa.id))
+          }
+        }
+      }
+
+      for (const h of dim.hierarchies) {
+        const cp = l.hierarchyChipPos[h.id]
+        if (cp && pointInRect(dim.position.x + cp.x, dim.position.y + cp.y, rect)) {
+          keys.push(hierarchyKey(dim.id, h.id))
+        }
+        h.path.slice(0, -1).forEach((from, i) => {
+          const to = h.path[i + 1]
+          const p0 = l.paramPos[from]
+          const p1 = l.paramPos[to]
+          if (!p0 || !p1) return
+          const mx = dim.position.x + (p0.x + p1.x) / 2
+          const my = dim.position.y + (p0.y + p1.y) / 2
+          if (pointInRect(mx, my, rect)) keys.push(edgeKey(dim.id, from, to))
+        })
+      }
+    }
+    return keys
+  }
+
+  /** shared select handler for every clickable element: plain click replaces
+   * the selection, Shift/Ctrl toggles membership. Suppressed if the click
+   * follows an actual drag (movedRef), same convention as the rest of the
+   * canvas uses to tell a click from a drag-release. */
+  function selectClick(key: string, e: React.MouseEvent) {
+    e.stopPropagation()
+    if (movedRef.current) {
+      movedRef.current = false
+      return
+    }
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey
+    setSelection((prev) => (additive ? toggleInSelection(prev, key) : selectOnly(key)))
+  }
+
   function onBackgroundClick(e: React.MouseEvent) {
-    const { x, y } = toLocalPoint(e.clientX, e.clientY)
-    dispatch({ type: 'ADD_DIMENSION', x: x - DIM_WIDTH / 2, y: y - DIM_HEIGHT / 2 })
+    if (movedRef.current) {
+      movedRef.current = false
+      return
+    }
+    if (!e.shiftKey && !e.ctrlKey && !e.metaKey) setSelection(new Set())
   }
 
   function beginDrag(state: DragState, e: React.PointerEvent) {
@@ -168,6 +267,14 @@ export function Canvas({
     )
   }
 
+  function startMarquee(e: React.PointerEvent) {
+    const { x, y } = toLocalPoint(e.clientX, e.clientY)
+    beginDrag(
+      { kind: 'marquee', additive: e.shiftKey || e.ctrlKey || e.metaKey, startX: x, startY: y },
+      e,
+    )
+  }
+
   function onDrag(e: React.PointerEvent) {
     const drag = dragRef.current
     if (!drag) return
@@ -182,54 +289,88 @@ export function Canvas({
 
     switch (drag.kind) {
       case 'dim':
-        dispatch({ type: 'MOVE_DIMENSION', dimId: drag.dimId, x: x - drag.offsetX, y: y - drag.offsetY })
+        dispatch(
+          { type: 'MOVE_DIMENSION', dimId: drag.dimId, x: x - drag.offsetX, y: y - drag.offsetY },
+          `move-dim-${drag.dimId}`,
+        )
         break
       case 'fact':
-        dispatch({ type: 'MOVE_FACT', x: x - drag.offsetX, y: y - drag.offsetY })
+        dispatch(
+          { type: 'MOVE_FACT', x: x - drag.offsetX, y: y - drag.offsetY },
+          'move-fact',
+        )
         break
       case 'param': {
         const dim = schema.dimensions.find((d) => d.id === drag.dimId)
         if (!dim) return
-        dispatch({
-          type: 'MOVE_PARAMETER',
-          dimId: drag.dimId,
-          paramId: drag.paramId,
-          x: x - dim.position.x - drag.offsetX,
-          y: y - dim.position.y - drag.offsetY,
-        })
+        dispatch(
+          {
+            type: 'MOVE_PARAMETER',
+            dimId: drag.dimId,
+            paramId: drag.paramId,
+            x: x - dim.position.x - drag.offsetX,
+            y: y - dim.position.y - drag.offsetY,
+          },
+          `move-param-${drag.dimId}-${drag.paramId}`,
+        )
         break
       }
       case 'weakAttr': {
         const dim = schema.dimensions.find((d) => d.id === drag.dimId)
         if (!dim) return
-        dispatch({
-          type: 'MOVE_WEAK_ATTRIBUTE',
-          dimId: drag.dimId,
-          paramId: drag.paramId,
-          weakAttrId: drag.weakAttrId,
-          x: x - dim.position.x - drag.offsetX,
-          y: y - dim.position.y - drag.offsetY,
-        })
+        dispatch(
+          {
+            type: 'MOVE_WEAK_ATTRIBUTE',
+            dimId: drag.dimId,
+            paramId: drag.paramId,
+            weakAttrId: drag.weakAttrId,
+            x: x - dim.position.x - drag.offsetX,
+            y: y - dim.position.y - drag.offsetY,
+          },
+          `move-wa-${drag.dimId}-${drag.paramId}-${drag.weakAttrId}`,
+        )
         break
       }
       case 'chip': {
         const dim = schema.dimensions.find((d) => d.id === drag.dimId)
         if (!dim) return
-        dispatch({
-          type: 'MOVE_HIERARCHY_CHIP',
-          dimId: drag.dimId,
-          hierarchyId: drag.hierarchyId,
-          x: x - dim.position.x - drag.offsetX,
-          y: y - dim.position.y - drag.offsetY,
-        })
+        dispatch(
+          {
+            type: 'MOVE_HIERARCHY_CHIP',
+            dimId: drag.dimId,
+            hierarchyId: drag.hierarchyId,
+            x: x - dim.position.x - drag.offsetX,
+            y: y - dim.position.y - drag.offsetY,
+          },
+          `move-chip-${drag.dimId}-${drag.hierarchyId}`,
+        )
         break
       }
+      case 'marquee':
+        setMarqueeRect({
+          x: Math.min(drag.startX, x),
+          y: Math.min(drag.startY, y),
+          w: Math.abs(x - drag.startX),
+          h: Math.abs(y - drag.startY),
+        })
+        break
     }
   }
 
   function endDrag() {
+    const drag = dragRef.current
+    if (drag?.kind === 'marquee' && marqueeRect) {
+      const keys = collectInRect(marqueeRect)
+      setSelection((prev) => {
+        const base = drag.additive ? new Set(prev) : new Set<string>()
+        for (const k of keys) base.add(k)
+        return base
+      })
+    }
+    setMarqueeRect(null)
     dragRef.current = null
     dragStartRef.current = null
+    commit()
   }
 
   function startRename(
@@ -242,11 +383,8 @@ export function Canvas({
   }
 
   function openPopover(dim: Dimension, paramId: string, e: React.MouseEvent) {
+    e.preventDefault()
     e.stopPropagation()
-    if (movedRef.current) {
-      movedRef.current = false
-      return
-    }
     const svg = svgRef.current
     const l = layouts.get(dim.id)!
     const p = l.paramPos[paramId]
@@ -276,6 +414,7 @@ export function Canvas({
           width={bounds.width}
           height={bounds.height}
           fill="#f8fafc"
+          onPointerDown={startMarquee}
           onClick={onBackgroundClick}
         />
 
@@ -308,9 +447,11 @@ export function Canvas({
             width={factWidth}
             height={factHeight}
             fill="#1e293b"
-            stroke="#0f172a"
+            stroke={selection.has(FACT_KEY) ? SELECTED_COLOR : '#0f172a'}
+            strokeWidth={selection.has(FACT_KEY) ? 3 : 1.5}
             rx={2}
             onPointerDown={startFactDrag}
+            onClick={(e) => selectClick(FACT_KEY, e)}
             className="cursor-move"
           />
           <text
@@ -321,6 +462,7 @@ export function Canvas({
             fontWeight={700}
             fontSize={14}
             onPointerDown={startFactDrag}
+            onClick={(e) => selectClick(FACT_KEY, e)}
             onDoubleClick={(e) =>
               startRename(e, schema.fact.name, (name) =>
                 dispatch({ type: 'RENAME_FACT', name }),
@@ -335,8 +477,10 @@ export function Canvas({
               <text
                 x={factX + 12}
                 y={factY + 42 + i * 20}
-                fill="#e2e8f0"
+                fill={selection.has(measureKey(m.id)) ? '#93c5fd' : '#e2e8f0'}
                 fontSize={12}
+                className="cursor-pointer"
+                onClick={(e) => selectClick(measureKey(m.id), e)}
                 onDoubleClick={(e) =>
                   startRename(e, m.name, (name) =>
                     dispatch({
@@ -356,9 +500,10 @@ export function Canvas({
                 fontSize={12}
                 textAnchor="end"
                 className="cursor-pointer"
-                onClick={() =>
+                onClick={(e) => {
+                  e.stopPropagation()
                   dispatch({ type: 'DELETE_MEASURE', measureId: m.id })
-                }
+                }}
               >
                 ×
               </text>
@@ -371,7 +516,10 @@ export function Canvas({
             fill="#93c5fd"
             fontSize={12}
             className="cursor-pointer"
-            onClick={() => dispatch({ type: 'ADD_MEASURE' })}
+            onClick={(e) => {
+              e.stopPropagation()
+              dispatch({ type: 'ADD_MEASURE' })
+            }}
           >
             + mesure
           </text>
@@ -384,18 +532,33 @@ export function Canvas({
               key={dim.id}
               dim={dim}
               layout={l}
+              selection={selection}
               onDragStart={(e) => startDrag(dim, e)}
               onParamDragStart={(paramId, e) => startParamDrag(dim, paramId, e)}
               onWeakAttrDragStart={(paramId, waId, e) =>
                 startWeakAttrDrag(dim, paramId, waId, e)
               }
               onChipDragStart={(hId, e) => startChipDrag(dim, hId, e)}
-              onParamClick={(paramId, e) => openPopover(dim, paramId, e)}
+              onParamContextMenu={(paramId, e) => openPopover(dim, paramId, e)}
+              onSelectClick={selectClick}
               onRename={startRename}
               dispatch={dispatch}
             />
           )
         })}
+
+        {marqueeRect && (
+          <rect
+            x={marqueeRect.x}
+            y={marqueeRect.y}
+            width={marqueeRect.w}
+            height={marqueeRect.h}
+            fill="#2563eb1a"
+            stroke={SELECTED_COLOR}
+            strokeWidth={1}
+            pointerEvents="none"
+          />
+        )}
       </svg>
 
       {popover && (
@@ -451,16 +614,19 @@ function InlineEditor({
 function DimensionNode({
   dim,
   layout,
+  selection,
   onDragStart,
   onParamDragStart,
   onWeakAttrDragStart,
   onChipDragStart,
-  onParamClick,
+  onParamContextMenu,
+  onSelectClick,
   onRename,
   dispatch,
 }: {
   dim: Dimension
   layout: ReturnType<typeof layoutDimension>
+  selection: Set<string>
   onDragStart: (e: React.PointerEvent) => void
   onParamDragStart: (paramId: string, e: React.PointerEvent) => void
   onWeakAttrDragStart: (
@@ -469,15 +635,32 @@ function DimensionNode({
     e: React.PointerEvent,
   ) => void
   onChipDragStart: (hierarchyId: string, e: React.PointerEvent) => void
-  onParamClick: (paramId: string, e: React.MouseEvent) => void
+  onParamContextMenu: (paramId: string, e: React.MouseEvent) => void
+  onSelectClick: (key: string, e: React.MouseEvent) => void
   onRename: (
     e: React.MouseEvent,
     current: string,
     onSubmit: (value: string) => void,
   ) => void
-  dispatch: Dispatch<Action>
+  dispatch: SchemaDispatch
 }) {
   const { x, y } = dim.position
+  const isDimSelected = selection.has(dimKey(dim.id))
+
+  // unique (from,to) segments across every hierarchy — a segment shared by
+  // several hierarchies is drawn (and clicked) once, deleting/duplicating
+  // it acts on all of them (see selection.ts)
+  const edges: { from: string; to: string }[] = []
+  const seenEdges = new Set<string>()
+  dim.hierarchies.forEach((h) => {
+    h.path.slice(0, -1).forEach((from, i) => {
+      const to = h.path[i + 1]
+      const key = `${from}->${to}`
+      if (seenEdges.has(key)) return
+      seenEdges.add(key)
+      edges.push({ from, to })
+    })
+  })
 
   return (
     <g transform={`translate(${x},${y})`}>
@@ -487,38 +670,52 @@ function DimensionNode({
         width={DIM_WIDTH}
         height={DIM_HEIGHT}
         fill="#ffffff"
-        stroke="#1e293b"
-        strokeWidth={1.5}
+        stroke={isDimSelected ? SELECTED_COLOR : '#1e293b'}
+        strokeWidth={isDimSelected ? 3 : 1.5}
         rx={2}
         onPointerDown={onDragStart}
+        onClick={(e) => onSelectClick(dimKey(dim.id), e)}
         className="cursor-move"
       />
 
-      {/* DF lines between consecutive parameters of each hierarchy */}
-      {dim.hierarchies.map((h) =>
-        h.path.slice(0, -1).map((paramId, i) => {
-          const from = layout.paramPos[paramId]
-          const to = layout.paramPos[h.path[i + 1]]
-          if (!from || !to) return null
-          return (
+      {/* DF lines between consecutive parameters, one per unique segment */}
+      {edges.map(({ from, to }) => {
+        const p0 = layout.paramPos[from]
+        const p1 = layout.paramPos[to]
+        if (!p0 || !p1) return null
+        const selected = selection.has(edgeKey(dim.id, from, to))
+        return (
+          <g key={`${from}-${to}`}>
             <line
-              key={`${h.id}-${paramId}`}
-              x1={from.x}
-              y1={from.y}
-              x2={to.x}
-              y2={to.y}
-              stroke="#334155"
-              strokeWidth={1.5}
+              x1={p0.x}
+              y1={p0.y}
+              x2={p1.x}
+              y2={p1.y}
+              stroke={selected ? SELECTED_COLOR : '#334155'}
+              strokeWidth={selected ? 3 : 1.5}
+              pointerEvents="none"
             />
-          )
-        }),
-      )}
+            {/* wider transparent line so the thin trait stays easy to click */}
+            <line
+              x1={p0.x}
+              y1={p0.y}
+              x2={p1.x}
+              y2={p1.y}
+              stroke="transparent"
+              strokeWidth={10}
+              className="cursor-pointer"
+              onClick={(e) => onSelectClick(edgeKey(dim.id, from, to), e)}
+            />
+          </g>
+        )
+      })}
 
       {/* hierarchy name chips */}
       {dim.hierarchies.map((h, i) => {
         const p = layout.hierarchyChipPos[h.id]
         if (!p) return null
         const color = HIERARCHY_COLORS[i % HIERARCHY_COLORS.length]
+        const selected = selection.has(hierarchyKey(dim.id, h.id))
         return (
           <g key={h.id} transform={`translate(${p.x},${p.y})`}>
             <rect
@@ -528,8 +725,11 @@ function DimensionNode({
               height={18}
               rx={3}
               fill={color}
+              stroke={selected ? '#1e3a8a' : 'none'}
+              strokeWidth={selected ? 2 : 0}
               className="cursor-move"
               onPointerDown={(e) => onChipDragStart(h.id, e)}
+              onClick={(e) => onSelectClick(hierarchyKey(dim.id, h.id), e)}
               onDoubleClick={(e) =>
                 onRename(e, h.name, (name) =>
                   dispatch({
@@ -557,13 +757,14 @@ function DimensionNode({
               fontSize={11}
               fill="#dc2626"
               className="cursor-pointer"
-              onClick={() =>
+              onClick={(e) => {
+                e.stopPropagation()
                 dispatch({
                   type: 'DELETE_HIERARCHY',
                   dimId: dim.id,
                   hierarchyId: h.id,
                 })
-              }
+              }}
             >
               ×
             </text>
@@ -577,6 +778,7 @@ function DimensionNode({
           const base = layout.paramPos[p.id]
           const wl = layout.weakAttrPos[`${p.id}:${wa.id}`]
           if (!base || !wl) return null
+          const selected = selection.has(weakAttrKey(dim.id, p.id, wa.id))
           return (
             <g key={wa.id}>
               <line
@@ -592,10 +794,11 @@ function DimensionNode({
                 y={wl.labelY}
                 fontSize={11}
                 textDecoration="underline"
-                fill="#1e293b"
+                fill={selected ? SELECTED_COLOR : '#1e293b'}
                 style={{ paintOrder: 'stroke', stroke: '#f8fafc', strokeWidth: 3 }}
                 className="cursor-move"
                 onPointerDown={(e) => onWeakAttrDragStart(p.id, wa.id, e)}
+                onClick={(e) => onSelectClick(weakAttrKey(dim.id, p.id, wa.id), e)}
                 onDoubleClick={(e) =>
                   onRename(e, wa.name, (name) =>
                     dispatch({
@@ -616,14 +819,15 @@ function DimensionNode({
                 fontSize={11}
                 fill="#dc2626"
                 className="cursor-pointer"
-                onClick={() =>
+                onClick={(e) => {
+                  e.stopPropagation()
                   dispatch({
                     type: 'DELETE_WEAK_ATTRIBUTE',
                     dimId: dim.id,
                     paramId: p.id,
                     weakAttrId: wa.id,
                   })
-                }
+                }}
               >
                 ×
               </text>
@@ -637,6 +841,7 @@ function DimensionNode({
         const pos = layout.paramPos[p.id]
         if (!pos) return null
         const isKey = p.id === dim.keyParameterId
+        const selected = selection.has(paramKey(dim.id, p.id))
         return (
           <g key={p.id} transform={`translate(${pos.x},${pos.y})`}>
             {/* larger invisible hit-area so the now-small ring stays easy to click/drag */}
@@ -645,7 +850,8 @@ function DimensionNode({
               fill="transparent"
               className="cursor-pointer"
               onPointerDown={(e) => onParamDragStart(p.id, e)}
-              onClick={(e) => onParamClick(p.id, e)}
+              onClick={(e) => onSelectClick(paramKey(dim.id, p.id), e)}
+              onContextMenu={(e) => onParamContextMenu(p.id, e)}
               onDoubleClick={(e) =>
                 onRename(e, p.name, (name) =>
                   dispatch({
@@ -660,8 +866,8 @@ function DimensionNode({
             <circle
               r={PARAM_RADIUS}
               fill="#ffffff"
-              stroke="#1e293b"
-              strokeWidth={isKey ? 2 : 1.5}
+              stroke={selected ? SELECTED_COLOR : '#1e293b'}
+              strokeWidth={selected ? 3 : isKey ? 2 : 1.5}
               pointerEvents="none"
             />
             <text
@@ -669,7 +875,7 @@ function DimensionNode({
               textAnchor="middle"
               fontSize={11}
               fontWeight={isKey ? 700 : 400}
-              fill="#1e293b"
+              fill={selected ? SELECTED_COLOR : '#1e293b'}
               style={{ paintOrder: 'stroke', stroke: '#f8fafc', strokeWidth: 3 }}
               pointerEvents="none"
             >
@@ -688,6 +894,7 @@ function DimensionNode({
         fontSize={13}
         fill="#1e293b"
         onPointerDown={onDragStart}
+        onClick={(e) => onSelectClick(dimKey(dim.id), e)}
         onDoubleClick={(e) =>
           onRename(e, dim.name, (name) =>
             dispatch({ type: 'RENAME_DIMENSION', dimId: dim.id, name }),
@@ -704,7 +911,8 @@ function DimensionNode({
         fontSize={13}
         fill="#dc2626"
         className="cursor-pointer"
-        onClick={() => {
+        onClick={(e) => {
+          e.stopPropagation()
           if (window.confirm(`Supprimer la dimension ${dim.name} ?`)) {
             dispatch({ type: 'DELETE_DIMENSION', dimId: dim.id })
           }
@@ -725,7 +933,7 @@ function ParamPopover({
   schema: Schema
   state: PopoverState
   onClose: () => void
-  dispatch: Dispatch<Action>
+  dispatch: SchemaDispatch
 }) {
   const dim = schema.dimensions.find((d) => d.id === state.dimId)
   if (!dim) return null

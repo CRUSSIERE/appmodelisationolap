@@ -1,5 +1,4 @@
-import type { Dispatch } from 'react'
-import type { Action } from '../state'
+import type { SchemaDispatch } from '../state'
 import type { Dimension, Parameter, Schema } from '../types'
 import type { Warning } from '../validate'
 
@@ -7,10 +6,12 @@ export function SidePanel({
   schema,
   dispatch,
   warnings,
+  commit,
 }: {
   schema: Schema
-  dispatch: Dispatch<Action>
+  dispatch: SchemaDispatch
   warnings: Warning[]
+  commit: () => void
 }) {
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col gap-4 overflow-y-auto border-l border-slate-300 bg-white p-4 text-sm">
@@ -35,8 +36,9 @@ export function SidePanel({
           className="w-full rounded border border-slate-300 px-2 py-1"
           value={schema.fact.name}
           onChange={(e) =>
-            dispatch({ type: 'RENAME_FACT', name: e.target.value })
+            dispatch({ type: 'RENAME_FACT', name: e.target.value }, 'fact-name')
           }
+          onBlur={commit}
         />
         <div className="mt-2 space-y-1">
           {schema.fact.measures.map((m) => (
@@ -45,12 +47,16 @@ export function SidePanel({
                 className="w-full rounded border border-slate-300 px-2 py-1"
                 value={m.name}
                 onChange={(e) =>
-                  dispatch({
-                    type: 'RENAME_MEASURE',
-                    measureId: m.id,
-                    name: e.target.value,
-                  })
+                  dispatch(
+                    {
+                      type: 'RENAME_MEASURE',
+                      measureId: m.id,
+                      name: e.target.value,
+                    },
+                    `measure-name-${m.id}`,
+                  )
                 }
+                onBlur={commit}
               />
               <button
                 type="button"
@@ -79,7 +85,7 @@ export function SidePanel({
         </h2>
         <div className="space-y-3">
           {schema.dimensions.map((dim) => (
-            <DimensionPanel key={dim.id} dim={dim} dispatch={dispatch} />
+            <DimensionPanel key={dim.id} dim={dim} dispatch={dispatch} commit={commit} />
           ))}
           {schema.dimensions.length === 0 && (
             <p className="text-xs text-slate-400">Aucune dimension.</p>
@@ -93,9 +99,11 @@ export function SidePanel({
 function DimensionPanel({
   dim,
   dispatch,
+  commit,
 }: {
   dim: Dimension
-  dispatch: Dispatch<Action>
+  dispatch: SchemaDispatch
+  commit: () => void
 }) {
   return (
     <details className="rounded border border-slate-300 open:bg-slate-50" open>
@@ -105,12 +113,16 @@ function DimensionPanel({
           value={dim.name}
           onClick={(e) => e.stopPropagation()}
           onChange={(e) =>
-            dispatch({
-              type: 'RENAME_DIMENSION',
-              dimId: dim.id,
-              name: e.target.value,
-            })
+            dispatch(
+              {
+                type: 'RENAME_DIMENSION',
+                dimId: dim.id,
+                name: e.target.value,
+              },
+              `dim-name-${dim.id}`,
+            )
           }
+          onBlur={commit}
         />
         <button
           type="button"
@@ -129,7 +141,7 @@ function DimensionPanel({
 
       <div className="space-y-2 border-t border-slate-200 px-2 py-2">
         {dim.parameters.map((p) => (
-          <ParameterPanel key={p.id} dim={dim} param={p} dispatch={dispatch} />
+          <ParameterPanel key={p.id} dim={dim} param={p} dispatch={dispatch} commit={commit} />
         ))}
 
         <div>
@@ -143,13 +155,17 @@ function DimensionPanel({
                   className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
                   value={h.name}
                   onChange={(e) =>
-                    dispatch({
-                      type: 'RENAME_HIERARCHY',
-                      dimId: dim.id,
-                      hierarchyId: h.id,
-                      name: e.target.value,
-                    })
+                    dispatch(
+                      {
+                        type: 'RENAME_HIERARCHY',
+                        dimId: dim.id,
+                        hierarchyId: h.id,
+                        name: e.target.value,
+                      },
+                      `hier-name-${h.id}`,
+                    )
                   }
+                  onBlur={commit}
                 />
                 <button
                   type="button"
@@ -198,10 +214,12 @@ function ParameterPanel({
   dim,
   param,
   dispatch,
+  commit,
 }: {
   dim: Dimension
   param: Parameter
-  dispatch: Dispatch<Action>
+  dispatch: SchemaDispatch
+  commit: () => void
 }) {
   const isKey = param.id === dim.keyParameterId
   return (
@@ -211,13 +229,17 @@ function ParameterPanel({
           className="w-full rounded border border-slate-300 px-2 py-1 text-xs font-medium"
           value={param.name}
           onChange={(e) =>
-            dispatch({
-              type: 'RENAME_PARAMETER',
-              dimId: dim.id,
-              paramId: param.id,
-              name: e.target.value,
-            })
+            dispatch(
+              {
+                type: 'RENAME_PARAMETER',
+                dimId: dim.id,
+                paramId: param.id,
+                name: e.target.value,
+              },
+              `param-name-${param.id}`,
+            )
           }
+          onBlur={commit}
         />
         {isKey && (
           <span className="whitespace-nowrap text-[10px] uppercase text-slate-400">
@@ -233,14 +255,18 @@ function ParameterPanel({
               className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
               value={wa.name}
               onChange={(e) =>
-                dispatch({
-                  type: 'RENAME_WEAK_ATTRIBUTE',
-                  dimId: dim.id,
-                  paramId: param.id,
-                  weakAttrId: wa.id,
-                  name: e.target.value,
-                })
+                dispatch(
+                  {
+                    type: 'RENAME_WEAK_ATTRIBUTE',
+                    dimId: dim.id,
+                    paramId: param.id,
+                    weakAttrId: wa.id,
+                    name: e.target.value,
+                  },
+                  `wa-name-${wa.id}`,
+                )
               }
+              onBlur={commit}
             />
             <button
               type="button"

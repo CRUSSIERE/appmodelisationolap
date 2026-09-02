@@ -1,4 +1,4 @@
-import type { Dimension } from './types'
+import type { Dimension, Hierarchy } from './types'
 
 export const DIM_WIDTH = 140
 export const DIM_HEIGHT = 48
@@ -15,6 +15,40 @@ export interface Point {
 export interface WeakAttrLayout extends Point {
   labelX: number
   labelY: number
+}
+
+/**
+ * Picks the path edge a hierarchy's name-chip sits on: its first segment
+ * that no other hierarchy of the dimension also uses. Hierarchies sharing a
+ * trunk (e.g. both starting at the key) then land their chip on the segment
+ * where they actually branch off, instead of piling up on the shared trunk.
+ */
+function pickChipEdge(dim: Dimension, h: Hierarchy): [string, string] | null {
+  if (h.path.length < 2) return null
+  const otherEdges = new Set<string>()
+  for (const other of dim.hierarchies) {
+    if (other.id === h.id) continue
+    for (let i = 0; i < other.path.length - 1; i++) {
+      otherEdges.add(`${other.path[i]}->${other.path[i + 1]}`)
+    }
+  }
+  for (let i = 0; i < h.path.length - 1; i++) {
+    if (!otherEdges.has(`${h.path[i]}->${h.path[i + 1]}`)) {
+      return [h.path[i], h.path[i + 1]]
+    }
+  }
+  // every segment is also used by another hierarchy (e.g. identical paths) — default to the first
+  return [h.path[0], h.path[1]]
+}
+
+/** projects `pt` onto segment [p0, p1], clamped to stay between the two endpoints */
+function clampToSegment(pt: Point, p0: Point, p1: Point): Point {
+  const dx = p1.x - p0.x
+  const dy = p1.y - p0.y
+  const lenSq = dx * dx + dy * dy
+  if (lenSq === 0) return { x: p0.x, y: p0.y }
+  const t = Math.max(0, Math.min(1, ((pt.x - p0.x) * dx + (pt.y - p0.y) * dy) / lenSq))
+  return { x: p0.x + t * dx, y: p0.y + t * dy }
 }
 
 export interface DimensionLayout {
@@ -104,18 +138,14 @@ export function layoutDimension(dim: Dimension): DimensionLayout {
 
   const hierarchyChipPos: Record<string, Point> = {}
   dim.hierarchies.forEach((h) => {
-    if (h.chipPosition) {
-      hierarchyChipPos[h.id] = h.chipPosition
-      return
-    }
-    if (h.path.length < 1) return
-    const p0 = paramPos[h.path[0]]
-    const p1 = paramPos[h.path[1] ?? h.path[0]]
+    const edge = pickChipEdge(dim, h)
+    if (!edge) return
+    const p0 = paramPos[edge[0]]
+    const p1 = paramPos[edge[1]]
     if (!p0 || !p1) return
-    hierarchyChipPos[h.id] = {
-      x: (p0.x + p1.x) / 2,
-      y: (p0.y + p1.y) / 2,
-    }
+    hierarchyChipPos[h.id] = h.chipPosition
+      ? clampToSegment(h.chipPosition, p0, p1)
+      : { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 }
   })
 
   const rows = [...paramRows.values()].flat()
