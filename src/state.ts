@@ -206,10 +206,14 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         if (action.paramId === d.keyParameterId) return d
         const trimmed = {
           ...d,
-          hierarchies: d.hierarchies.map((h) => {
-            const idx = h.path.indexOf(action.paramId)
-            return idx === -1 ? h : { ...h, path: h.path.slice(0, idx) }
-          }),
+          // only trim a hierarchy where the deleted param is its terminal
+          // node — it may also appear mid-path in another hierarchy that
+          // shares this trunk, and that one must stay intact
+          hierarchies: d.hierarchies.map((h) =>
+            h.path[h.path.length - 1] === action.paramId
+              ? { ...h, path: h.path.slice(0, -1) }
+              : h,
+          ),
         }
         return pruneOrphanParameters(trimmed)
       })

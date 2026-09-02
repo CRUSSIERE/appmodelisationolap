@@ -16,12 +16,69 @@ export function exportJson(schema: Schema) {
   download(blob, `${schema.fact.name || 'schema'}.json`)
 }
 
+function isNamedItem(v: unknown): v is { id: string; name: string } {
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    typeof (v as Record<string, unknown>).id === 'string' &&
+    typeof (v as Record<string, unknown>).name === 'string'
+  )
+}
+
+/** Structural check only — catches shapes that would otherwise crash deep in
+ * rendering (e.g. `dimensions` not an array) with a message naming the
+ * problem field, instead of a generic "Cannot read properties of undefined". */
+function assertValidSchema(data: unknown): asserts data is Schema {
+  const fail = (reason: string): never => {
+    throw new Error(`Fichier JSON invalide : ${reason}`)
+  }
+  if (!data || typeof data !== 'object') fail('le contenu n’est pas un objet')
+  const s = data as Record<string, unknown>
+
+  if (!isNamedItem(s.fact)) fail('"fact" est manquant ou invalide')
+  const fact = s.fact as Record<string, unknown>
+  if (!Array.isArray(fact.measures) || !fact.measures.every(isNamedItem)) {
+    fail('"fact.measures" doit être un tableau de {id, name}')
+  }
+
+  if (!Array.isArray(s.dimensions)) fail('"dimensions" doit être un tableau')
+  ;(s.dimensions as unknown[]).forEach((dim, i) => {
+    if (!isNamedItem(dim)) fail(`dimensions[${i}] est invalide`)
+    const d = dim as Record<string, unknown>
+    const pos = d.position as Record<string, unknown> | undefined
+    if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') {
+      fail(`dimensions[${i}].position doit être {x, y}`)
+    }
+    if (typeof d.keyParameterId !== 'string') {
+      fail(`dimensions[${i}].keyParameterId est manquant`)
+    }
+    if (!Array.isArray(d.parameters)) {
+      fail(`dimensions[${i}].parameters doit être un tableau`)
+    }
+    ;(d.parameters as unknown[]).forEach((p, j) => {
+      if (!isNamedItem(p)) fail(`dimensions[${i}].parameters[${j}] est invalide`)
+      const wa = (p as Record<string, unknown>).weakAttributes
+      if (!Array.isArray(wa) || !wa.every(isNamedItem)) {
+        fail(`dimensions[${i}].parameters[${j}].weakAttributes doit être un tableau de {id, name}`)
+      }
+    })
+    if (!Array.isArray(d.hierarchies)) {
+      fail(`dimensions[${i}].hierarchies doit être un tableau`)
+    }
+    ;(d.hierarchies as unknown[]).forEach((h, j) => {
+      if (!isNamedItem(h)) fail(`dimensions[${i}].hierarchies[${j}] est invalide`)
+      const path = (h as Record<string, unknown>).path
+      if (!Array.isArray(path) || !path.every((id) => typeof id === 'string')) {
+        fail(`dimensions[${i}].hierarchies[${j}].path doit être un tableau d’ids`)
+      }
+    })
+  })
+}
+
 export function parseImportedJson(text: string): Schema {
   const data = JSON.parse(text)
-  if (!data || typeof data !== 'object' || !data.fact || !data.dimensions) {
-    throw new Error('Fichier JSON invalide : structure de schéma inattendue')
-  }
-  return data as Schema
+  assertValidSchema(data)
+  return data
 }
 
 type RasterFormat = 'png' | 'jpeg'
