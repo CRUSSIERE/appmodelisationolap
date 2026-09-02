@@ -94,6 +94,19 @@ export function layoutDimension(dim: Dimension): DimensionLayout {
     })
   })
 
+  // a parameter can exist without being on any hierarchy path yet (e.g. just
+  // duplicated) — stack those below the laid-out rows instead of leaving
+  // them with no position, which would make them invisible on canvas
+  const laidOutRows = [...paramRows.values()].flat()
+  const orphanBaseRow = Math.max(0, ...laidOutRows) + 1
+  let orphanOffset = 0
+  for (const p of dim.parameters) {
+    if (paramDepth.has(p.id)) continue
+    paramDepth.set(p.id, 0)
+    paramRows.set(p.id, [orphanBaseRow + orphanOffset])
+    orphanOffset += 1
+  }
+
   const centerY = DIM_HEIGHT / 2
   const paramPos: Record<string, Point> = {}
   const paramById = new Map(dim.parameters.map((p) => [p.id, p]))

@@ -1,5 +1,13 @@
 import { useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
+import {
+  dimensionMenuItems,
+  factMenuItems,
+  hierarchyMenuItems,
+  measureMenuItems,
+  paramBaseMenuItems,
+  weakAttrMenuItems,
+} from '../elementActions'
 import { DIM_HEIGHT, DIM_WIDTH, PARAM_RADIUS, layoutDimension } from '../layout'
 import {
   FACT_KEY,
@@ -13,7 +21,8 @@ import {
   weakAttrKey,
 } from '../selection'
 import type { SchemaDispatch } from '../state'
-import type { Dimension, Schema } from '../types'
+import type { Dimension, Parameter, Schema } from '../types'
+import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu'
 
 const HIERARCHY_COLORS = ['#2563eb', '#b45309', '#0d9488', '#be185d', '#4d7c0f']
 const SELECTED_COLOR = '#2563eb'
@@ -25,13 +34,6 @@ interface Rect {
   y: number
   w: number
   h: number
-}
-
-interface PopoverState {
-  dimId: string
-  paramId: string
-  x: number
-  y: number
 }
 
 interface EditorState {
@@ -81,7 +83,7 @@ export function Canvas({
   setSelection: Dispatch<SetStateAction<Set<string>>>
   commit: () => void
 }) {
-  const [popover, setPopover] = useState<PopoverState | null>(null)
+  const [menu, setMenu] = useState<MenuState | null>(null)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [marqueeRect, setMarqueeRect] = useState<Rect | null>(null)
   const dragRef = useRef<DragState | null>(null)
@@ -382,23 +384,130 @@ export function Canvas({
     setEditor({ x: e.clientX, y: e.clientY, value: current, onSubmit })
   }
 
-  function openPopover(dim: Dimension, paramId: string, e: React.MouseEvent) {
+  function openMenu(items: MenuItem[], e: React.MouseEvent) {
     e.preventDefault()
     e.stopPropagation()
-    const svg = svgRef.current
-    const l = layouts.get(dim.id)!
-    const p = l.paramPos[paramId]
-    const rect = svg?.getBoundingClientRect()
-    setPopover({
-      dimId: dim.id,
-      paramId,
-      x: (rect?.left ?? 0) + dim.position.x + p.x,
-      y: (rect?.top ?? 0) + dim.position.y + p.y,
-    })
+    setMenu({ x: e.clientX, y: e.clientY, items })
+  }
+
+  /** items only meaningful on a hierarchy-carrying parameter, appended after
+   * the generic rename/duplicate/copy/delete set (see paramBaseMenuItems) */
+  function paramHierarchyItems(dim: Dimension, paramId: string): MenuItem[] {
+    const isKey = paramId === dim.keyParameterId
+    const terminalHierarchies = dim.hierarchies.filter(
+      (h) => h.path[h.path.length - 1] === paramId,
+    )
+    const items: MenuItem[] = [
+      {
+        label: 'Ajouter un attribut faible',
+        onClick: () => dispatch({ type: 'ADD_WEAK_ATTRIBUTE', dimId: dim.id, paramId }),
+      },
+    ]
+    if (isKey) {
+      items.push({
+        label:
+          dim.hierarchies.length === 0
+            ? 'Ajouter une hiérarchie'
+            : 'Ajouter une hiérarchie alternative',
+        onClick: () => dispatch({ type: 'ADD_HIERARCHY', dimId: dim.id }),
+      })
+    }
+    for (const h of terminalHierarchies) {
+      items.push({
+        label:
+          terminalHierarchies.length > 1
+            ? `Ajouter un niveau au-dessus (${h.name})`
+            : 'Ajouter un niveau au-dessus',
+        onClick: () => dispatch({ type: 'ADD_LEVEL_ABOVE', dimId: dim.id, hierarchyId: h.id }),
+      })
+    }
+    return items
+  }
+
+  function onDimContextMenu(dim: Dimension, e: React.MouseEvent) {
+    openMenu(
+      dimensionMenuItems(dim, dispatch, () =>
+        startRename(e, dim.name, (name) =>
+          dispatch({ type: 'RENAME_DIMENSION', dimId: dim.id, name }),
+        ),
+      ),
+      e,
+    )
+  }
+
+  function onFactContextMenu(e: React.MouseEvent) {
+    openMenu(
+      factMenuItems(schema.fact, () =>
+        startRename(e, schema.fact.name, (name) => dispatch({ type: 'RENAME_FACT', name })),
+      ),
+      e,
+    )
+  }
+
+  function onMeasureContextMenu(m: { id: string; name: string }, e: React.MouseEvent) {
+    openMenu(
+      measureMenuItems(m, dispatch, () =>
+        startRename(e, m.name, (name) =>
+          dispatch({ type: 'RENAME_MEASURE', measureId: m.id, name }),
+        ),
+      ),
+      e,
+    )
+  }
+
+  function onParamContextMenu(dim: Dimension, param: Parameter, e: React.MouseEvent) {
+    openMenu(
+      [
+        ...paramBaseMenuItems(dim, param, dispatch, () =>
+          startRename(e, param.name, (name) =>
+            dispatch({ type: 'RENAME_PARAMETER', dimId: dim.id, paramId: param.id, name }),
+          ),
+        ),
+        ...paramHierarchyItems(dim, param.id),
+      ],
+      e,
+    )
+  }
+
+  function onWeakAttrContextMenu(
+    dim: Dimension,
+    param: Parameter,
+    waId: string,
+    e: React.MouseEvent,
+  ) {
+    const wa = param.weakAttributes.find((w) => w.id === waId)
+    if (!wa) return
+    openMenu(
+      weakAttrMenuItems(dim, param, wa, dispatch, () =>
+        startRename(e, wa.name, (name) =>
+          dispatch({
+            type: 'RENAME_WEAK_ATTRIBUTE',
+            dimId: dim.id,
+            paramId: param.id,
+            weakAttrId: wa.id,
+            name,
+          }),
+        ),
+      ),
+      e,
+    )
+  }
+
+  function onHierarchyContextMenu(dim: Dimension, hierarchyId: string, e: React.MouseEvent) {
+    const h = dim.hierarchies.find((x) => x.id === hierarchyId)
+    if (!h) return
+    openMenu(
+      hierarchyMenuItems(dim, h, dispatch, () =>
+        startRename(e, h.name, (name) =>
+          dispatch({ type: 'RENAME_HIERARCHY', dimId: dim.id, hierarchyId: h.id, name }),
+        ),
+      ),
+      e,
+    )
   }
 
   return (
-    <div className="relative h-full w-full overflow-auto bg-slate-50">
+    <div className="relative h-full w-full overflow-auto bg-slate-100">
       <svg
         ref={svgRef}
         width={bounds.width}
@@ -452,6 +561,7 @@ export function Canvas({
             rx={2}
             onPointerDown={startFactDrag}
             onClick={(e) => selectClick(FACT_KEY, e)}
+            onContextMenu={onFactContextMenu}
             className="cursor-move"
           />
           <text
@@ -468,6 +578,7 @@ export function Canvas({
                 dispatch({ type: 'RENAME_FACT', name }),
               )
             }
+            onContextMenu={onFactContextMenu}
             className="cursor-move select-none"
           >
             {schema.fact.name}
@@ -490,22 +601,9 @@ export function Canvas({
                     }),
                   )
                 }
+                onContextMenu={(e) => onMeasureContextMenu(m, e)}
               >
                 {m.name}
-              </text>
-              <text
-                x={factX + factWidth - 14}
-                y={factY + 42 + i * 20}
-                fill="#f87171"
-                fontSize={12}
-                textAnchor="end"
-                className="cursor-pointer"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  dispatch({ type: 'DELETE_MEASURE', measureId: m.id })
-                }}
-              >
-                ×
               </text>
             </g>
           ))}
@@ -539,7 +637,16 @@ export function Canvas({
                 startWeakAttrDrag(dim, paramId, waId, e)
               }
               onChipDragStart={(hId, e) => startChipDrag(dim, hId, e)}
-              onParamContextMenu={(paramId, e) => openPopover(dim, paramId, e)}
+              onDimContextMenu={(e) => onDimContextMenu(dim, e)}
+              onParamContextMenu={(paramId, e) => {
+                const param = dim.parameters.find((p) => p.id === paramId)
+                if (param) onParamContextMenu(dim, param, e)
+              }}
+              onWeakAttrContextMenu={(paramId, waId, e) => {
+                const param = dim.parameters.find((p) => p.id === paramId)
+                if (param) onWeakAttrContextMenu(dim, param, waId, e)
+              }}
+              onHierarchyContextMenu={(hId, e) => onHierarchyContextMenu(dim, hId, e)}
               onSelectClick={selectClick}
               onRename={startRename}
               dispatch={dispatch}
@@ -561,14 +668,7 @@ export function Canvas({
         )}
       </svg>
 
-      {popover && (
-        <ParamPopover
-          schema={schema}
-          state={popover}
-          onClose={() => setPopover(null)}
-          dispatch={dispatch}
-        />
-      )}
+      {menu && <ContextMenu state={menu} onClose={() => setMenu(null)} />}
 
       {editor && (
         <InlineEditor state={editor} onClose={() => setEditor(null)} />
@@ -619,7 +719,10 @@ function DimensionNode({
   onParamDragStart,
   onWeakAttrDragStart,
   onChipDragStart,
+  onDimContextMenu,
   onParamContextMenu,
+  onWeakAttrContextMenu,
+  onHierarchyContextMenu,
   onSelectClick,
   onRename,
   dispatch,
@@ -635,7 +738,10 @@ function DimensionNode({
     e: React.PointerEvent,
   ) => void
   onChipDragStart: (hierarchyId: string, e: React.PointerEvent) => void
+  onDimContextMenu: (e: React.MouseEvent) => void
   onParamContextMenu: (paramId: string, e: React.MouseEvent) => void
+  onWeakAttrContextMenu: (paramId: string, weakAttrId: string, e: React.MouseEvent) => void
+  onHierarchyContextMenu: (hierarchyId: string, e: React.MouseEvent) => void
   onSelectClick: (key: string, e: React.MouseEvent) => void
   onRename: (
     e: React.MouseEvent,
@@ -675,7 +781,8 @@ function DimensionNode({
         rx={2}
         onPointerDown={onDragStart}
         onClick={(e) => onSelectClick(dimKey(dim.id), e)}
-        className="cursor-move"
+        onContextMenu={onDimContextMenu}
+        className="cursor-move transition-[stroke] hover:stroke-blue-400"
       />
 
       {/* DF lines between consecutive parameters, one per unique segment */}
@@ -740,6 +847,7 @@ function DimensionNode({
                   }),
                 )
               }
+              onContextMenu={(e) => onHierarchyContextMenu(h.id, e)}
             />
             <text
               y={4}
@@ -750,23 +858,6 @@ function DimensionNode({
               pointerEvents="none"
             >
               {h.name}
-            </text>
-            <text
-              x={32}
-              y={4}
-              fontSize={11}
-              fill="#dc2626"
-              className="cursor-pointer"
-              onClick={(e) => {
-                e.stopPropagation()
-                dispatch({
-                  type: 'DELETE_HIERARCHY',
-                  dimId: dim.id,
-                  hierarchyId: h.id,
-                })
-              }}
-            >
-              ×
             </text>
           </g>
         )
@@ -810,26 +901,9 @@ function DimensionNode({
                     }),
                   )
                 }
+                onContextMenu={(e) => onWeakAttrContextMenu(p.id, wa.id, e)}
               >
                 {wa.name}
-              </text>
-              <text
-                x={wl.labelX + wa.name.length * 6 + 8}
-                y={wl.labelY}
-                fontSize={11}
-                fill="#dc2626"
-                className="cursor-pointer"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  dispatch({
-                    type: 'DELETE_WEAK_ATTRIBUTE',
-                    dimId: dim.id,
-                    paramId: p.id,
-                    weakAttrId: wa.id,
-                  })
-                }}
-              >
-                ×
               </text>
             </g>
           )
@@ -900,125 +974,12 @@ function DimensionNode({
             dispatch({ type: 'RENAME_DIMENSION', dimId: dim.id, name }),
           )
         }
+        onContextMenu={onDimContextMenu}
         className="cursor-move select-none"
       >
         {dim.name}
-      </text>
-      <text
-        x={DIM_WIDTH - 4}
-        y={-6}
-        textAnchor="end"
-        fontSize={13}
-        fill="#dc2626"
-        className="cursor-pointer"
-        onClick={(e) => {
-          e.stopPropagation()
-          if (window.confirm(`Supprimer la dimension ${dim.name} ?`)) {
-            dispatch({ type: 'DELETE_DIMENSION', dimId: dim.id })
-          }
-        }}
-      >
-        × supprimer
       </text>
     </g>
   )
 }
 
-function ParamPopover({
-  schema,
-  state,
-  onClose,
-  dispatch,
-}: {
-  schema: Schema
-  state: PopoverState
-  onClose: () => void
-  dispatch: SchemaDispatch
-}) {
-  const dim = schema.dimensions.find((d) => d.id === state.dimId)
-  if (!dim) return null
-  const isKey = state.paramId === dim.keyParameterId
-  const terminalHierarchies = dim.hierarchies.filter(
-    (h) => h.path[h.path.length - 1] === state.paramId,
-  )
-
-  const items: { label: string; onClick: () => void }[] = [
-    {
-      label: 'Ajouter un attribut faible',
-      onClick: () => {
-        dispatch({
-          type: 'ADD_WEAK_ATTRIBUTE',
-          dimId: dim.id,
-          paramId: state.paramId,
-        })
-        onClose()
-      },
-    },
-  ]
-
-  if (isKey && dim.hierarchies.length === 0) {
-    items.push({
-      label: 'Ajouter une hiérarchie',
-      onClick: () => {
-        dispatch({ type: 'ADD_HIERARCHY', dimId: dim.id })
-        onClose()
-      },
-    })
-  } else if (isKey) {
-    items.push({
-      label: 'Ajouter une hiérarchie alternative',
-      onClick: () => {
-        dispatch({ type: 'ADD_HIERARCHY', dimId: dim.id })
-        onClose()
-      },
-    })
-  }
-
-  for (const h of terminalHierarchies) {
-    items.push({
-      label:
-        terminalHierarchies.length > 1
-          ? `Ajouter un niveau au-dessus (${h.name})`
-          : 'Ajouter un niveau au-dessus',
-      onClick: () => {
-        dispatch({ type: 'ADD_LEVEL_ABOVE', dimId: dim.id, hierarchyId: h.id })
-        onClose()
-      },
-    })
-  }
-
-  if (!isKey && terminalHierarchies.length > 0) {
-    items.push({
-      label: 'Supprimer ce niveau',
-      onClick: () => {
-        dispatch({
-          type: 'DELETE_PARAMETER',
-          dimId: dim.id,
-          paramId: state.paramId,
-        })
-        onClose()
-      },
-    })
-  }
-
-  return (
-    <>
-      <div className="fixed inset-0 z-10" onClick={onClose} />
-      <div
-        className="fixed z-20 min-w-[220px] rounded border border-slate-300 bg-white py-1 shadow-lg"
-        style={{ left: state.x + 20, top: state.y - 10 }}
-      >
-        {items.map((item) => (
-          <button
-            key={item.label}
-            type="button"
-            className="block w-full px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100"
-            onClick={item.onClick}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-    </>
-  )
-}

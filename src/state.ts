@@ -53,6 +53,10 @@ export type Action =
       hierarchyIds: string[]
       paramId: string
     }
+  | { type: 'DUPLICATE_DIMENSION'; dimId: string }
+  | { type: 'DUPLICATE_MEASURE'; measureId: string }
+  | { type: 'DUPLICATE_PARAMETER'; dimId: string; paramId: string }
+  | { type: 'DUPLICATE_WEAK_ATTRIBUTE'; dimId: string; paramId: string; weakAttrId: string }
 
 function updateDim(
   schema: Schema,
@@ -311,6 +315,67 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         }
         return { ...d, hierarchies: [...d.hierarchies, copy] }
       })
+
+    case 'DUPLICATE_DIMENSION': {
+      const source = schema.dimensions.find((d) => d.id === action.dimId)
+      if (!source) return schema
+      // remap every id so the clone shares nothing with the original, then
+      // rewrite parameter/hierarchy references through the remap table
+      const paramIdMap = new Map(source.parameters.map((p) => [p.id, makeId('p')]))
+      const parameters: Parameter[] = source.parameters.map((p) => ({
+        ...p,
+        id: paramIdMap.get(p.id)!,
+        weakAttributes: p.weakAttributes.map((wa) => ({ ...wa, id: makeId('wa') })),
+      }))
+      const hierarchies: Hierarchy[] = source.hierarchies.map((h) => ({
+        ...h,
+        id: makeId('h'),
+        path: h.path.map((pid) => paramIdMap.get(pid)!),
+      }))
+      const copy: Dimension = {
+        ...source,
+        id: makeId('dim'),
+        name: `${source.name}_copie`,
+        position: { x: source.position.x + 40, y: source.position.y + 40 },
+        keyParameterId: paramIdMap.get(source.keyParameterId)!,
+        parameters,
+        hierarchies,
+      }
+      return { ...schema, dimensions: [...schema.dimensions, copy] }
+    }
+
+    case 'DUPLICATE_MEASURE': {
+      const source = schema.fact.measures.find((m) => m.id === action.measureId)
+      if (!source) return schema
+      const copy = { id: makeId('m'), name: `${source.name}_copie` }
+      return {
+        ...schema,
+        fact: { ...schema.fact, measures: [...schema.fact.measures, copy] },
+      }
+    }
+
+    case 'DUPLICATE_PARAMETER':
+      return updateDim(schema, action.dimId, (d) => {
+        const source = d.parameters.find((p) => p.id === action.paramId)
+        if (!source) return d
+        const copy: Parameter = {
+          ...source,
+          id: makeId('p'),
+          name: `${source.name}_copie`,
+          weakAttributes: source.weakAttributes.map((wa) => ({ ...wa, id: makeId('wa') })),
+        }
+        return { ...d, parameters: [...d.parameters, copy] }
+      })
+
+    case 'DUPLICATE_WEAK_ATTRIBUTE':
+      return updateDim(schema, action.dimId, (d) =>
+        updateParam(d, action.paramId, (p) => {
+          const source = p.weakAttributes.find((wa) => wa.id === action.weakAttrId)
+          if (!source) return p
+          const copy = { ...source, id: makeId('wa'), name: `${source.name}_copie` }
+          return { ...p, weakAttributes: [...p.weakAttributes, copy] }
+        }),
+      )
 
     case 'REMOVE_LEVEL_FROM_HIERARCHIES': {
       const targetIds = new Set(action.hierarchyIds)
