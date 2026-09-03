@@ -1,93 +1,108 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Canvas } from './components/Canvas'
-import { SidePanel } from './components/SidePanel'
-import { Toolbar } from './components/Toolbar'
-import { useHistorySchema } from './history'
+import { useState } from 'react'
+import type { FolderEntry, FolderState } from './components/FolderPanel'
+import { TabBar } from './components/TabBar'
+import { Editor } from './Editor'
+import { parseImportedJson } from './export'
+import { makeId } from './ids'
 import { sampleSchema } from './sampleSchema'
-import { deleteSelection, duplicateSelection } from './selection'
-import { validateSchema } from './validate'
+import type { Schema } from './types'
+
+interface Doc {
+  id: string
+  name: string
+  /** folder-relative path this was opened from; absent for unsaved documents.
+   * Identity is the path, not the name: a picked folder is walked
+   * recursively, so `a/schema.json` and `b/schema.json` both show up. */
+  path?: string
+  /** the schema the editor starts from; its live state lives in the Editor */
+  initial: Schema
+}
+
+function newDoc(name: string, initial: Schema, path?: string): Doc {
+  return { id: makeId('doc'), name, path, initial }
+}
 
 function App() {
-  const { schema, dispatch, commit, undo, redo, canUndo, canRedo } = useHistorySchema(sampleSchema)
-  const [selection, setSelection] = useState<Set<string>>(new Set())
-  const svgRef = useRef<SVGSVGElement>(null)
-  const warnings = useMemo(() => validateSchema(schema), [schema])
+  const [docs, setDocs] = useState<Doc[]>([newDoc('Nouveau schéma', sampleSchema)])
+  const [activeId, setActiveId] = useState(() => docs[0].id)
+  const [folderName, setFolderName] = useState<string | null>(null)
+  const [entries, setEntries] = useState<FolderEntry[]>([])
 
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null
-      const isEditable =
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        !!target?.isContentEditable
-      const mod = e.ctrlKey || e.metaKey
+  function pickFolder(files: FileList) {
+    const all = [...files]
+    const jsons = all
+      .filter((f) => f.name.toLowerCase().endsWith('.json'))
+      .map((f) => ({ name: f.name, path: f.webkitRelativePath || f.name, file: f }))
+      .sort((a, b) => a.path.localeCompare(b.path))
+    // webkitRelativePath is "<folder>/…"; its first segment names the folder
+    setFolderName(all[0]?.webkitRelativePath?.split('/')[0] ?? null)
+    setEntries(jsons)
+  }
 
-      if (mod && !isEditable && e.key.toLowerCase() === 'z') {
-        e.preventDefault()
-        if (e.shiftKey) redo()
-        else undo()
-        return
-      }
-      if (mod && !isEditable && e.key.toLowerCase() === 'y') {
-        e.preventDefault()
-        redo()
-        return
-      }
-      if (isEditable) return
-
-      if (mod && e.key.toLowerCase() === 'd') {
-        if (selection.size === 0) return
-        e.preventDefault()
-        duplicateSelection(schema, selection, dispatch)
-        return
-      }
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selection.size === 0) return
-        e.preventDefault()
-        const dimCount = [...selection].filter((k) => k.startsWith('dim:')).length
-        if (dimCount > 0) {
-          const msg =
-            dimCount > 1
-              ? `Supprimer ${dimCount} dimensions (et le reste de la sélection) ?`
-              : 'Supprimer la dimension sélectionnée (et le reste de la sélection) ?'
-          if (!window.confirm(msg)) return
-        }
-        deleteSelection(schema, selection, dispatch)
-        setSelection(new Set())
-      }
+  function openEntry(entry: FolderEntry) {
+    const existing = docs.find((d) => d.path === entry.path)
+    if (existing) {
+      setActiveId(existing.id)
+      return
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [schema, selection, dispatch, undo, redo])
+    entry.file
+      .text()
+      .then((text) => {
+        const doc = newDoc(entry.name, parseImportedJson(text), entry.path)
+        setDocs((prev) => [...prev, doc])
+        setActiveId(doc.id)
+      })
+      .catch((err) =>
+        window.alert(err instanceof Error ? err.message : `Lecture impossible : ${entry.name}`),
+      )
+  }
+
+  function closeDoc(id: string) {
+    const doc = docs.find((d) => d.id === id)
+    if (!doc) return
+    // closing drops the editor's undo history along with any unsaved edit,
+    // and nothing here can tell an untouched tab from a modified one
+    if (!window.confirm(`Fermer « ${doc.name} » ? Les modifications non enregistrées seront perdues.`)) {
+      return
+    }
+    const remaining = docs.filter((d) => d.id !== id)
+    const next = remaining.length > 0 ? remaining : [newDoc('Nouveau schéma', sampleSchema)]
+    setDocs(next)
+    if (id === activeId) setActiveId(next[Math.max(0, docs.indexOf(doc) - 1)]?.id ?? next[0].id)
+  }
+
+  function newTab() {
+    const doc = newDoc('Nouveau schéma', sampleSchema)
+    setDocs((prev) => [...prev, doc])
+    setActiveId(doc.id)
+  }
+
+  const folder: FolderState = {
+    name: folderName,
+    entries,
+    pick: pickFolder,
+    open: openEntry,
+  }
 
   return (
     <div className="flex h-screen w-screen flex-col">
-      <Toolbar
-        schema={schema}
-        dispatch={dispatch}
-        svgRef={svgRef}
-        undo={undo}
-        redo={redo}
-        canUndo={canUndo}
-        canRedo={canRedo}
+      <TabBar
+        tabs={docs}
+        activeId={activeId}
+        onSelect={setActiveId}
+        onClose={closeDoc}
+        onNew={newTab}
       />
-      <div className="flex min-h-0 flex-1">
-        <Canvas
-          schema={schema}
-          dispatch={dispatch}
-          svgRef={svgRef}
-          selection={selection}
-          setSelection={setSelection}
-          commit={commit}
+      {/* every document stays mounted so switching tabs keeps its history,
+          selection and scroll position; only the active one is displayed */}
+      {docs.map((doc) => (
+        <Editor
+          key={doc.id}
+          initial={doc.initial}
+          active={doc.id === activeId}
+          folder={folder}
         />
-        <SidePanel
-          schema={schema}
-          dispatch={dispatch}
-          warnings={warnings}
-          commit={commit}
-          selection={selection}
-        />
-      </div>
+      ))}
     </div>
   )
 }

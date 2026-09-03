@@ -1,3 +1,4 @@
+import { DEFAULT_TEXT_STYLE, FONT_SIZE_RANGE } from './textStyle'
 import type { Schema } from './types'
 
 function download(blob: Blob, filename: string) {
@@ -64,6 +65,35 @@ function assertValidSchema(data: unknown): asserts data is Schema {
     }
   })
 
+  // normalizeSchema merges this straight into the schema, and the canvas
+  // divides by fontSize — an unchecked value here surfaces later as NaN
+  // geometry rather than as an error naming the bad field
+  if (s.textStyle !== undefined) {
+    if (!s.textStyle || typeof s.textStyle !== 'object' || Array.isArray(s.textStyle)) {
+      fail('"textStyle" doit être un objet')
+    }
+    const ts = s.textStyle as Record<string, unknown>
+    if (ts.fontFamily !== undefined && typeof ts.fontFamily !== 'string') {
+      fail('textStyle.fontFamily doit être une chaîne')
+    }
+    if (ts.color !== undefined && typeof ts.color !== 'string') {
+      fail('textStyle.color doit être une chaîne')
+    }
+    if (ts.fontSize !== undefined) {
+      const size = ts.fontSize
+      if (
+        typeof size !== 'number' ||
+        !Number.isFinite(size) ||
+        size < FONT_SIZE_RANGE.min ||
+        size > FONT_SIZE_RANGE.max
+      ) {
+        fail(
+          `textStyle.fontSize doit être un nombre entre ${FONT_SIZE_RANGE.min} et ${FONT_SIZE_RANGE.max}`,
+        )
+      }
+    }
+  }
+
   if (!Array.isArray(s.dimensions)) fail('"dimensions" doit être un tableau')
   ;(s.dimensions as unknown[]).forEach((dim, i) => {
     if (!isNamedItem(dim)) fail(`dimensions[${i}] est invalide`)
@@ -125,6 +155,7 @@ function normalizeSchema(schema: Schema): Schema {
   const y = Math.max(500, ...schema.dimensions.map((d) => d.position.y + 300))
   return {
     ...schema,
+    textStyle: { ...DEFAULT_TEXT_STYLE, ...schema.textStyle },
     facts: schema.facts.map((f) => ({
       ...f,
       position: f.position ?? { x, y },

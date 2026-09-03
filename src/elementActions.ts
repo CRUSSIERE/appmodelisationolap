@@ -1,7 +1,7 @@
 import type { MenuItem } from './components/ContextMenu'
 import type { SchemaDispatch } from './state'
 import { wouldCreateCycle } from './state'
-import type { Dimension, Fact, Hierarchy, HierarchyLinkType, Measure, Parameter, Schema, WeakAttribute } from './types'
+import type { Dimension, Fact, Hierarchy, HierarchyLinkType, Measure, Orientation, Parameter, Schema, WeakAttribute } from './types'
 
 const LINK_TYPE_LABELS: Record<HierarchyLinkType, string> = {
   strict: 'Stricte (1,n → 1,1)',
@@ -23,6 +23,22 @@ function renameItem(onRename?: () => void): MenuItem[] {
   return onRename ? [{ label: 'Renommer', onClick: onRename }] : []
 }
 
+const ORIENTATION_LABELS: Record<Orientation, string> = {
+  right: 'Hiérarchies → droite',
+  left: 'Hiérarchies → gauche',
+  up: 'Hiérarchies → haut',
+  down: 'Hiérarchies → bas',
+}
+
+/** direction the dimension's hierarchies fan out; the current one is ticked */
+function orientationMenuItems(dim: Dimension, dispatch: SchemaDispatch): MenuItem[] {
+  const current = dim.orientation ?? 'right'
+  return (Object.keys(ORIENTATION_LABELS) as Orientation[]).map((o) => ({
+    label: `${o === current ? '✓ ' : '   '}${ORIENTATION_LABELS[o]}`,
+    onClick: () => dispatch({ type: 'SET_DIMENSION_ORIENTATION', dimId: dim.id, orientation: o }),
+  }))
+}
+
 export function dimensionMenuItems(
   schema: Schema,
   dim: Dimension,
@@ -33,6 +49,7 @@ export function dimensionMenuItems(
     ...renameItem(onRename),
     { label: 'Dupliquer', onClick: () => dispatch({ type: 'DUPLICATE_DIMENSION', dimId: dim.id }) },
     copyItem(dim.name),
+    ...orientationMenuItems(dim, dispatch),
     ...factConnectionMenuItems(schema, dim, dispatch),
     {
       label: 'Supprimer',

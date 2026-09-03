@@ -1,11 +1,24 @@
-import type { Dimension, Hierarchy } from './types'
+import { DEFAULT_TEXT_STYLE, SCALE, fontOf, measureText } from './textStyle'
+import type { Dimension, Hierarchy, Orientation, TextStyle } from './types'
 
-export const DIM_WIDTH = 140
+/** the dimension rectangle never shrinks below this; it grows to fit its name */
+export const DIM_MIN_WIDTH = 140
 export const DIM_HEIGHT = 48
 export const PARAM_RADIUS = 6
 const COL_WIDTH = 100
 const ROW_HEIGHT = 64
 const WEAK_ATTR_STEP = 34
+/** horizontal breathing room around the dimension name inside its rectangle */
+const DIM_NAME_PADDING = 24
+/** slack around the outermost node, so labels drawn beside or under a node
+ * (parameter names, weak attributes) stay inside the reported bounding box */
+const LABEL_PAD = WEAK_ATTR_STEP * 2
+
+/** width the dimension rectangle needs to hold its name at the current style */
+export function dimBoxWidth(dim: Dimension, style: TextStyle = DEFAULT_TEXT_STYLE): number {
+  const w = measureText(dim.name, fontOf(style, SCALE.dimName, 700))
+  return Math.max(DIM_MIN_WIDTH, Math.ceil(w) + DIM_NAME_PADDING)
+}
 
 export interface Point {
   x: number
@@ -58,26 +71,59 @@ export interface DimensionLayout {
   weakAttrPos: Record<string, WeakAttrLayout>
   /** hierarchyId -> chip center position, local coords */
   hierarchyChipPos: Record<string, Point>
-  /** local bounding box, used to size the SVG viewport */
+  /** width of the dimension rectangle itself, grown to fit its name */
+  boxWidth: number
+  /** local bounding box, used to size the SVG viewport. minX/minY are 0 for
+   * the default 'right' orientation but go negative for 'left'/'up', where
+   * the hierarchy fans out on the other side of the rectangle's anchor. */
+  minX: number
+  minY: number
   width: number
   height: number
 }
 
+/** maps a node's (depth, row) in the hierarchy tree to local coordinates.
+ * depth counts roll-up levels away from the key, row separates alternative
+ * hierarchies; which screen axis each one uses is what `orientation` picks. */
+function placeNode(
+  depth: number,
+  row: number,
+  orientation: Orientation,
+  boxWidth: number,
+): Point {
+  switch (orientation) {
+    case 'left':
+      return { x: -depth * COL_WIDTH, y: DIM_HEIGHT / 2 + row * ROW_HEIGHT }
+    case 'up':
+      return { x: boxWidth / 2 + row * COL_WIDTH, y: -depth * ROW_HEIGHT }
+    case 'down':
+      return { x: boxWidth / 2 + row * COL_WIDTH, y: DIM_HEIGHT + depth * ROW_HEIGHT }
+    case 'right':
+    default:
+      return { x: boxWidth + depth * COL_WIDTH, y: DIM_HEIGHT / 2 + row * ROW_HEIGHT }
+  }
+}
+
 /**
- * Lays out a dimension's parameter tree: the key sits on the dimension's
- * right edge (col 0), each hierarchy fans out to the right. Nodes shared by
+ * Lays out a dimension's parameter tree: the key sits on the edge of the
+ * dimension rectangle (depth 0) and each hierarchy fans out from there in
+ * the dimension's `orientation`. Nodes shared by
  * every hierarchy of the dimension (the trunk) land on the center row;
  * nodes only reachable through a subset of hierarchies get pulled toward
  * that subset's average row, which is what makes alternative hierarchies
  * visually bifurcate.
  */
-export function layoutDimension(dim: Dimension): DimensionLayout {
+export function layoutDimension(
+  dim: Dimension,
+  style: TextStyle = DEFAULT_TEXT_STYLE,
+): DimensionLayout {
+  const boxWidth = dimBoxWidth(dim, style)
+  const orientation = dim.orientation ?? 'right'
   const n = dim.hierarchies.length
   const targetRow = (hIndex: number) => hIndex - (n - 1) / 2
 
   const paramDepth = new Map<string, number>()
   const paramRows = new Map<string, number[]>()
-  let maxDepth = 0
 
   // the key always gets a position, even before any hierarchy is defined —
   // it's what the dimension rectangle and the fact-link line anchor to
@@ -86,7 +132,6 @@ export function layoutDimension(dim: Dimension): DimensionLayout {
 
   dim.hierarchies.forEach((h, hIndex) => {
     h.path.forEach((paramId, depth) => {
-      maxDepth = Math.max(maxDepth, depth)
       if (!paramDepth.has(paramId)) paramDepth.set(paramId, depth)
       const rows = paramRows.get(paramId) ?? []
       rows.push(targetRow(hIndex))
@@ -107,7 +152,6 @@ export function layoutDimension(dim: Dimension): DimensionLayout {
     orphanOffset += 1
   }
 
-  const centerY = DIM_HEIGHT / 2
   const paramPos: Record<string, Point> = {}
   const paramById = new Map(dim.parameters.map((p) => [p.id, p]))
   for (const [paramId, depth] of paramDepth) {
@@ -118,10 +162,7 @@ export function layoutDimension(dim: Dimension): DimensionLayout {
     }
     const rows = paramRows.get(paramId) ?? [0]
     const avgRow = rows.reduce((a, b) => a + b, 0) / rows.length
-    paramPos[paramId] = {
-      x: DIM_WIDTH + depth * COL_WIDTH,
-      y: centerY + avgRow * ROW_HEIGHT,
-    }
+    paramPos[paramId] = placeNode(depth, avgRow, orientation, boxWidth)
   }
 
   const weakAttrPos: Record<string, WeakAttrLayout> = {}
@@ -161,24 +202,28 @@ export function layoutDimension(dim: Dimension): DimensionLayout {
       : { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 }
   })
 
-  const rows = [...paramRows.values()].flat()
-  const minRow = Math.min(0, ...rows)
-  const maxRow = Math.max(0, ...rows)
-  let height = Math.max(
-    DIM_HEIGHT,
-    (maxRow - minRow) * ROW_HEIGHT + DIM_HEIGHT + WEAK_ATTR_STEP * 2,
-  )
-  let width = DIM_WIDTH + maxDepth * COL_WIDTH + WEAK_ATTR_STEP * 3
-
-  // manual overrides can land outside the auto-computed bbox — grow to fit
-  for (const p of Object.values(paramPos)) {
-    width = Math.max(width, p.x + WEAK_ATTR_STEP)
-    height = Math.max(height, p.y + WEAK_ATTR_STEP)
-  }
-  for (const wa of Object.values(weakAttrPos)) {
-    width = Math.max(width, wa.x + WEAK_ATTR_STEP)
-    height = Math.max(height, wa.y + WEAK_ATTR_STEP)
+  // measured from the placed nodes rather than from (depth, row): it stays
+  // correct for every orientation, and absorbs manual position overrides
+  // that land outside the auto-computed grid for free
+  let minX = 0
+  let minY = 0
+  let maxX = boxWidth
+  let maxY = DIM_HEIGHT
+  for (const p of [...Object.values(paramPos), ...Object.values(weakAttrPos)]) {
+    minX = Math.min(minX, p.x - LABEL_PAD)
+    minY = Math.min(minY, p.y - LABEL_PAD)
+    maxX = Math.max(maxX, p.x + LABEL_PAD)
+    maxY = Math.max(maxY, p.y + LABEL_PAD)
   }
 
-  return { paramPos, weakAttrPos, hierarchyChipPos, width, height }
+  return {
+    paramPos,
+    weakAttrPos,
+    hierarchyChipPos,
+    boxWidth,
+    minX,
+    minY,
+    width: maxX - minX,
+    height: maxY - minY,
+  }
 }

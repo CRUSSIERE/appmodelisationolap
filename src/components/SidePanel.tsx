@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   dimensionMenuItems,
   factMenuItems,
@@ -11,9 +11,19 @@ import {
 import { sidePanelElementId } from '../selection'
 import { wouldCreateCycle } from '../state'
 import type { SchemaDispatch } from '../state'
-import type { AttributeDataType, Dimension, Fact, Measure, Parameter, Schema } from '../types'
+import { DEFAULT_TEXT_STYLE, FONT_FAMILIES, FONT_SIZE_RANGE } from '../textStyle'
+import type {
+  AttributeDataType,
+  Dimension,
+  Fact,
+  Measure,
+  Parameter,
+  Schema,
+  TextStyle,
+} from '../types'
 import type { Warning } from '../validate'
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu'
+import { FolderPanel, type FolderState } from './FolderPanel'
 
 const DATA_TYPE_LABELS: Record<AttributeDataType, string> = {
   undefined: '—',
@@ -69,32 +79,137 @@ function DataTypeSelect({
   )
 }
 
+/** sections that exist regardless of the schema's contents; the rest are
+ * derived per fact and per dimension. "Tout replier" folds both sets. */
+const FIXED_SECTIONS = ['folder', 'text-style']
+
+/** open/closed state of the panel's collapsible sections, keyed by a stable
+ * section id (`folder`, `text-style`, `fact:<id>`, `dim:<id>`, `params:<id>`,
+ * `hier:<id>`) */
+export interface Folds {
+  isOpen: (id: string) => boolean
+  setOpen: (id: string, open: boolean) => void
+}
+
+/** a <details> whose open state lives in `folds`, so "tout replier" and the
+ * canvas-selection reveal can drive it. `data-section` lets that reveal walk
+ * up from a focused input to every section currently hiding it. */
+function Section({
+  id,
+  folds,
+  className,
+  summary,
+  children,
+}: {
+  id: string
+  folds: Folds
+  className?: string
+  summary: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <details
+      data-section={id}
+      className={className}
+      open={folds.isOpen(id)}
+      onToggle={(e) => folds.setOpen(id, e.currentTarget.open)}
+    >
+      {summary}
+      {children}
+    </details>
+  )
+}
+
+/** the collapsible sections that must be open for a selection key's field to
+ * be visible, outermost first. Mirrors the ids the Section wrappers use. */
+function sectionsHiding(key: string): string[] {
+  const [kind, ...rest] = key.split(':')
+  switch (kind) {
+    case 'fact':
+      return [`fact:${rest[0]}`]
+    case 'measure':
+      return [`fact:${rest[0]}`]
+    case 'dim':
+      return [`dim:${rest[0]}`]
+    case 'param':
+    case 'wa':
+      return [`dim:${rest[0]}`, `params:${rest[0]}`]
+    case 'hier':
+      return [`dim:${rest[0]}`, `hier:${rest[0]}`]
+    default:
+      return []
+  }
+}
+
 export function SidePanel({
   schema,
   dispatch,
   warnings,
   commit,
   selection,
+  onClose,
+  folder,
 }: {
   schema: Schema
   dispatch: SchemaDispatch
   warnings: Warning[]
   commit: () => void
   selection: Set<string>
+  onClose: () => void
+  folder: FolderState
 }) {
   const [menu, setMenu] = useState<MenuState | null>(null)
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
-  // reveal the most recently selected canvas element in this panel: open
-  // its (collapsible) dimension section if needed, scroll it into view and
-  // focus it, mirroring the rename shortcut's focusAndSelect target ids
+  const folds: Folds = {
+    isOpen: (id) => !collapsed.has(id),
+    setOpen: (id, open) =>
+      setCollapsed((prev) => {
+        if (open === !prev.has(id)) return prev
+        const next = new Set(prev)
+        if (open) next.delete(id)
+        else next.add(id)
+        return next
+      }),
+  }
+
+  const allSections = useMemo(
+    () => [
+      ...FIXED_SECTIONS,
+      ...schema.facts.map((f) => `fact:${f.id}`),
+      ...schema.dimensions.flatMap((d) => [`dim:${d.id}`, `params:${d.id}`, `hier:${d.id}`]),
+    ],
+    [schema.facts, schema.dimensions],
+  )
+
+  // reveal the most recently selected canvas element in this panel. Opening
+  // the sections that hide it happens during render (React's "adjust state
+  // when a prop changes" pattern), so the field is already visible by the
+  // time the effect below scrolls to it.
+  const [revealed, setRevealed] = useState(selection)
+  if (selection !== revealed) {
+    setRevealed(selection)
+    const key = [...selection].at(-1)
+    const sections = key ? sectionsHiding(key) : []
+    if (sections.some((sec) => collapsed.has(sec))) {
+      const next = new Set(collapsed)
+      for (const sec of sections) next.delete(sec)
+      setCollapsed(next)
+    }
+  }
+
+  // scroll to and focus the revealed field, mirroring the rename shortcut's
+  // focusAndSelect target ids
   useEffect(() => {
     if (selection.size === 0) return
     const id = sidePanelElementId([...selection].at(-1)!)
-    const el = id ? (document.getElementById(id) as HTMLInputElement | null) : null
-    if (!el) return
-    el.closest('details')?.setAttribute('open', '')
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    el.focus()
+    if (!id) return
+    const frame = requestAnimationFrame(() => {
+      const el = document.getElementById(id) as HTMLInputElement | null
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
   }, [selection])
 
   function openMenu(e: React.MouseEvent, items: MenuItem[]) {
@@ -110,7 +225,51 @@ export function SidePanel({
   }
 
   return (
-    <aside className="flex h-full w-80 shrink-0 flex-col gap-5 overflow-y-auto border-l border-slate-200 bg-white p-4 text-sm">
+    <aside className="flex h-full w-80 shrink-0 flex-col gap-5 overflow-y-auto border-r border-slate-200 bg-white p-4 text-sm">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          title="Masquer le panneau (Ctrl+B)"
+          className="rounded px-1.5 py-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+          onClick={onClose}
+        >
+          «
+        </button>
+        <div className="ml-auto flex gap-2 text-xs">
+          <button
+            type="button"
+            className="font-medium text-blue-600 hover:underline"
+            onClick={() => setCollapsed(new Set(allSections))}
+          >
+            Tout replier
+          </button>
+          <button
+            type="button"
+            className="font-medium text-blue-600 hover:underline"
+            onClick={() => setCollapsed(new Set())}
+          >
+            Tout déplier
+          </button>
+        </div>
+      </div>
+
+      <Section
+        id="folder"
+        folds={folds}
+        className="rounded-lg border border-slate-200 p-2"
+        summary={
+          <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Dossier
+          </summary>
+        }
+      >
+        <div className="mt-2">
+          <FolderPanel folder={folder} />
+        </div>
+      </Section>
+
+      <TextStylePanel schema={schema} dispatch={dispatch} commit={commit} folds={folds} />
+
       {warnings.length > 0 && (
         <section>
           <h2 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-amber-700">
@@ -146,6 +305,7 @@ export function SidePanel({
               dispatch={dispatch}
               commit={commit}
               openMenu={openMenu}
+              folds={folds}
             />
           ))}
           {schema.facts.length === 0 && <p className="text-xs text-slate-400">Aucun fait.</p>}
@@ -165,6 +325,7 @@ export function SidePanel({
               dispatch={dispatch}
               commit={commit}
               openMenu={openMenu}
+              folds={folds}
             />
           ))}
           {schema.dimensions.length === 0 && (
@@ -178,36 +339,131 @@ export function SidePanel({
   )
 }
 
+/** one text appearance for the whole diagram; lives in the schema so it is
+ * exported with it. Every control writes the full style, coalesced per field
+ * so dragging a colour picker stays a single undo step. */
+function TextStylePanel({
+  schema,
+  dispatch,
+  commit,
+  folds,
+}: {
+  schema: Schema
+  dispatch: SchemaDispatch
+  commit: () => void
+  folds: Folds
+}) {
+  const style = schema.textStyle ?? DEFAULT_TEXT_STYLE
+  const set = (patch: Partial<TextStyle>, coalesceKey: string) =>
+    dispatch({ type: 'SET_TEXT_STYLE', textStyle: { ...style, ...patch } }, coalesceKey)
+
+  return (
+    <Section
+      id="text-style"
+      folds={folds}
+      className="rounded-lg border border-slate-200 p-2"
+      summary={
+        <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Texte
+        </summary>
+      }
+    >
+      <div className="mt-2 space-y-2">
+        <label className="flex items-center gap-2 text-xs text-slate-600">
+          <span className="w-14 shrink-0">Police</span>
+          <select
+            className="w-full rounded border border-slate-300 bg-white px-1 py-1 text-xs focus:border-blue-400 focus:outline-none"
+            value={style.fontFamily}
+            onChange={(e) => set({ fontFamily: e.target.value }, 'text-style-family')}
+            onBlur={commit}
+          >
+            {FONT_FAMILIES.map((f) => (
+              <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex items-center gap-2 text-xs text-slate-600">
+          <span className="w-14 shrink-0">Taille</span>
+          <input
+            type="range"
+            min={FONT_SIZE_RANGE.min}
+            max={FONT_SIZE_RANGE.max}
+            step={1}
+            className="w-full"
+            value={style.fontSize}
+            onChange={(e) => set({ fontSize: Number(e.target.value) }, 'text-style-size')}
+            onPointerUp={commit}
+          />
+          <span className="w-8 shrink-0 text-right tabular-nums">{style.fontSize}</span>
+        </label>
+
+        <label className="flex items-center gap-2 text-xs text-slate-600">
+          <span className="w-14 shrink-0">Couleur</span>
+          <input
+            type="color"
+            className="h-7 w-full cursor-pointer rounded border border-slate-300 bg-white"
+            value={style.color}
+            onChange={(e) => set({ color: e.target.value }, 'text-style-color')}
+            onBlur={commit}
+          />
+          <button
+            type="button"
+            className="shrink-0 text-[10px] font-medium text-blue-600 hover:underline"
+            onClick={() => {
+              dispatch({ type: 'SET_TEXT_STYLE', textStyle: DEFAULT_TEXT_STYLE })
+              commit()
+            }}
+          >
+            Défaut
+          </button>
+        </label>
+      </div>
+    </Section>
+  )
+}
+
 function FactPanel({
   fact,
   schema,
   dispatch,
   commit,
   openMenu,
+  folds,
 }: {
   fact: Fact
   schema: Schema
   dispatch: SchemaDispatch
   commit: () => void
   openMenu: (e: React.MouseEvent, items: MenuItem[]) => void
+  folds: Folds
 }) {
   return (
-    <div className="rounded-lg border border-slate-200 p-2">
-      <div className="flex items-center gap-1">
-        <input
-          id={`fact-name-input-${fact.id}`}
-          className="w-full rounded-md border border-slate-300 px-2 py-1.5 font-medium focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
-          value={fact.name}
-          onChange={(e) =>
-            dispatch({ type: 'RENAME_FACT', factId: fact.id, name: e.target.value }, `fact-name-${fact.id}`)
-          }
-          onBlur={commit}
-        />
-        <Kebab
-          openMenu={openMenu}
-          items={factMenuItems(fact, dispatch, () => focusAndSelect(`fact-name-input-${fact.id}`))}
-        />
-      </div>
+    <Section
+      id={`fact:${fact.id}`}
+      folds={folds}
+      className="rounded-lg border border-slate-200 p-2"
+      summary={
+        <summary className="flex cursor-pointer list-none items-center gap-1">
+          <input
+            id={`fact-name-input-${fact.id}`}
+            className="w-full rounded-md border border-slate-300 px-2 py-1.5 font-medium focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+            value={fact.name}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) =>
+              dispatch({ type: 'RENAME_FACT', factId: fact.id, name: e.target.value }, `fact-name-${fact.id}`)
+            }
+            onBlur={commit}
+          />
+          <Kebab
+            openMenu={openMenu}
+            items={factMenuItems(fact, dispatch, () => focusAndSelect(`fact-name-input-${fact.id}`))}
+          />
+        </summary>
+      }
+    >
       <div className="mt-2 space-y-1">
         {fact.measures.map((m) => (
           <MeasureRow key={m.id} factId={fact.id} measure={m} dispatch={dispatch} commit={commit} openMenu={openMenu} />
@@ -252,7 +508,7 @@ function FactPanel({
           </div>
         </div>
       )}
-    </div>
+    </Section>
   )
 }
 
@@ -301,57 +557,81 @@ function DimensionPanel({
   dispatch,
   commit,
   openMenu,
+  folds,
 }: {
   dim: Dimension
   schema: Schema
   dispatch: SchemaDispatch
   commit: () => void
   openMenu: (e: React.MouseEvent, items: MenuItem[]) => void
+  folds: Folds
 }) {
   return (
-    <details className="rounded-lg border border-slate-200 open:bg-slate-50/60" open>
-      <summary className="flex cursor-pointer list-none items-center gap-1 rounded-t-lg px-2 py-2">
-        <input
-          id={`dim-name-input-${dim.id}`}
-          className="w-full rounded border border-slate-300 px-2 py-1 text-sm font-semibold focus:border-blue-400 focus:outline-none"
-          value={dim.name}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) =>
-            dispatch(
-              {
-                type: 'RENAME_DIMENSION',
-                dimId: dim.id,
-                name: e.target.value,
-              },
-              `dim-name-${dim.id}`,
-            )
-          }
-          onBlur={commit}
-        />
-        <Kebab
-          openMenu={openMenu}
-          items={dimensionMenuItems(schema, dim, dispatch, () =>
-            focusAndSelect(`dim-name-input-${dim.id}`),
-          )}
-        />
-      </summary>
-
-      <div className="space-y-2 border-t border-slate-200 px-2 py-2">
-        {dim.parameters.map((p) => (
-          <ParameterPanel
-            key={p.id}
-            dim={dim}
-            param={p}
-            dispatch={dispatch}
-            commit={commit}
-            openMenu={openMenu}
+    <Section
+      id={`dim:${dim.id}`}
+      folds={folds}
+      className="rounded-lg border border-slate-200 open:bg-slate-50/60"
+      summary={
+        <summary className="flex cursor-pointer list-none items-center gap-1 rounded-t-lg px-2 py-2">
+          <input
+            id={`dim-name-input-${dim.id}`}
+            className="w-full rounded border border-slate-300 px-2 py-1 text-sm font-semibold focus:border-blue-400 focus:outline-none"
+            value={dim.name}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) =>
+              dispatch(
+                {
+                  type: 'RENAME_DIMENSION',
+                  dimId: dim.id,
+                  name: e.target.value,
+                },
+                `dim-name-${dim.id}`,
+              )
+            }
+            onBlur={commit}
           />
-        ))}
+          <Kebab
+            openMenu={openMenu}
+            items={dimensionMenuItems(schema, dim, dispatch, () =>
+              focusAndSelect(`dim-name-input-${dim.id}`),
+            )}
+          />
+        </summary>
+      }
+    >
+      <div className="space-y-2 border-t border-slate-200 px-2 py-2">
+        <Section
+          id={`params:${dim.id}`}
+          folds={folds}
+          summary={
+            <summary className="mb-1 cursor-pointer list-none text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Paramètres
+            </summary>
+          }
+        >
+          <div className="space-y-2">
+            {dim.parameters.map((p) => (
+              <ParameterPanel
+                key={p.id}
+                dim={dim}
+                param={p}
+                dispatch={dispatch}
+                commit={commit}
+                openMenu={openMenu}
+              />
+            ))}
+          </div>
+        </Section>
 
-        <div>
-          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Hiérarchies
-          </h3>
+        <Section
+          id={`hier:${dim.id}`}
+          folds={folds}
+          summary={
+            <summary className="mb-1 cursor-pointer list-none text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Hiérarchies
+            </summary>
+          }
+        >
           <div className="space-y-1">
             {dim.hierarchies.map((h) => (
               <div
@@ -437,9 +717,9 @@ function DimensionPanel({
               + hiérarchie
             </button>
           </div>
-        </div>
+        </Section>
       </div>
-    </details>
+    </Section>
   )
 }
 

@@ -47,11 +47,18 @@ export interface Hierarchy extends NamedItem {
   chipPosition?: Point
 }
 
+/** direction the dimension's hierarchies fan out from its key parameter.
+ * Set per dimension, not per hierarchy: hierarchies of a dimension share
+ * their trunk parameters, which can only hold one position each. */
+export type Orientation = 'right' | 'left' | 'up' | 'down'
+
 export interface Dimension extends NamedItem {
   position: Point
   keyParameterId: string
   parameters: Parameter[]
   hierarchies: Hierarchy[]
+  /** absent = 'right', the direction the editor used before this was settable */
+  orientation?: Orientation
 }
 
 export interface Measure extends NamedItem {
@@ -65,8 +72,19 @@ export interface Fact extends NamedItem {
   dimensionIds: string[]
 }
 
+/** one text appearance for the whole diagram */
+export interface TextStyle {
+  /** CSS font-family stack */
+  fontFamily: string
+  /** base size in px; every label is a fixed multiple of it (see textStyle.ts) */
+  fontSize: number
+  color: string
+}
+
 export interface Schema {
   version: 2
   facts: Fact[]
   dimensions: Dimension[]
+  /** absent = DEFAULT_TEXT_STYLE; backfilled on import */
+  textStyle?: TextStyle
 }

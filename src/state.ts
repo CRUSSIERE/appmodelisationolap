@@ -5,8 +5,10 @@ import type {
   Fact,
   Hierarchy,
   HierarchyLinkType,
+  Orientation,
   Parameter,
   Schema,
+  TextStyle,
 } from './types'
 
 /** dispatch that accepts an optional coalesce key: consecutive dispatches
@@ -93,6 +95,8 @@ export type Action =
       hierarchyIds: string[]
       paramId: string
     }
+  | { type: 'SET_DIMENSION_ORIENTATION'; dimId: string; orientation: Orientation }
+  | { type: 'SET_TEXT_STYLE'; textStyle: TextStyle }
   | { type: 'DUPLICATE_DIMENSION'; dimId: string }
   | { type: 'DUPLICATE_PARAMETER'; dimId: string; paramId: string }
   | { type: 'DUPLICATE_WEAK_ATTRIBUTE'; dimId: string; paramId: string; weakAttrId: string }
@@ -572,6 +576,17 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         }
         return { ...d, hierarchies: [...d.hierarchies, copy] }
       })
+
+    case 'SET_DIMENSION_ORIENTATION':
+      return {
+        ...schema,
+        dimensions: schema.dimensions.map((d) =>
+          d.id === action.dimId ? { ...d, orientation: action.orientation } : d,
+        ),
+      }
+
+    case 'SET_TEXT_STYLE':
+      return { ...schema, textStyle: action.textStyle }
 
     case 'DUPLICATE_DIMENSION': {
       const source = schema.dimensions.find((d) => d.id === action.dimId)

@@ -10,7 +10,8 @@ import {
   paramHierarchyMenuItems,
   weakAttrMenuItems,
 } from '../elementActions'
-import { DIM_HEIGHT, DIM_WIDTH, PARAM_RADIUS, layoutDimension } from '../layout'
+import { DIM_HEIGHT, PARAM_RADIUS, layoutDimension } from '../layout'
+import { DEFAULT_TEXT_STYLE, SCALE, fontOf, measureText } from '../textStyle'
 import {
   dimKey,
   edgeKey,
@@ -23,7 +24,7 @@ import {
   weakAttrKey,
 } from '../selection'
 import type { SchemaDispatch } from '../state'
-import type { Dimension, Fact, HierarchyLinkType, Parameter, Schema } from '../types'
+import type { Dimension, Fact, HierarchyLinkType, Parameter, Schema, TextStyle } from '../types'
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu'
 
 const HIERARCHY_COLORS = ['#2563eb', '#b45309', '#0d9488', '#be185d', '#4d7c0f']
@@ -101,42 +102,71 @@ export function Canvas({
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [marqueeRect, setMarqueeRect] = useState<Rect | null>(null)
+  const [frozenOrigin, setFrozenOrigin] = useState<{ x: number; y: number } | null>(null)
   const dragRef = useRef<DragState | null>(null)
   const movedRef = useRef(false)
   const dragStartRef = useRef<{ x: number; y: number } | null>(null)
 
+  const style = schema.textStyle ?? DEFAULT_TEXT_STYLE
+  /** every hard-coded vertical offset below was authored at the default base
+   * size; scaling them keeps the boxes proportional when the size changes */
+  const s = style.fontSize / DEFAULT_TEXT_STYLE.fontSize
+
   const layouts = useMemo(() => {
     const map = new Map<string, ReturnType<typeof layoutDimension>>()
-    for (const dim of schema.dimensions) map.set(dim.id, layoutDimension(dim))
+    for (const dim of schema.dimensions) map.set(dim.id, layoutDimension(dim, style))
     return map
-  }, [schema.dimensions])
+  }, [schema.dimensions, style])
 
-  const FACT_WIDTH = 170
-  const factSize = (fact: Fact) => ({
-    width: FACT_WIDTH,
-    height: 56 + fact.measures.length * 20,
-  })
+  const FACT_MIN_WIDTH = 170
+  /** the box grows to whichever of its labels is widest, so a long fact or
+   * measure name never spills out of the rectangle */
+  const factSize = (fact: Fact) => {
+    const widest = Math.max(
+      measureText(fact.name, fontOf(style, SCALE.factName, 700)),
+      measureText('+ mesure', fontOf(style, SCALE.measure)),
+      ...fact.measures.map((m) => measureText(m.name, fontOf(style, SCALE.measure))),
+    )
+    return {
+      width: Math.max(FACT_MIN_WIDTH, Math.ceil(widest) + 24),
+      height: (56 + fact.measures.length * 20) * s,
+    }
+  }
 
   const bounds = useMemo(() => {
-    let right = 1600
-    let bottom = 900
+    let minX = 0
+    let minY = 0
+    let maxX = 1600
+    let maxY = 900
     for (const dim of schema.dimensions) {
       const l = layouts.get(dim.id)!
-      right = Math.max(right, dim.position.x + l.width + 200)
-      bottom = Math.max(bottom, dim.position.y + l.height + 400)
+      // a dimension oriented 'left'/'up' extends behind its own anchor, so
+      // the viewport has to start at a negative coordinate to show it
+      minX = Math.min(minX, dim.position.x + l.minX)
+      minY = Math.min(minY, dim.position.y + l.minY)
+      maxX = Math.max(maxX, dim.position.x + l.minX + l.width + 200)
+      maxY = Math.max(maxY, dim.position.y + l.minY + l.height + 400)
     }
     for (const fact of schema.facts) {
-      right = Math.max(right, fact.position.x + 400)
-      bottom = Math.max(bottom, fact.position.y + 200)
+      maxX = Math.max(maxX, fact.position.x + 400)
+      maxY = Math.max(maxY, fact.position.y + 200)
     }
-    return { width: right, height: bottom }
+    return { minX, minY, width: maxX - minX, height: maxY - minY }
   }, [schema.dimensions, schema.facts, layouts])
+
+  /**
+   * Origin of the SVG viewport. It normally follows `bounds`, but a drag
+   * freezes it: dragging an element past the left/top edge would otherwise
+   * push `bounds.minX` further negative mid-gesture, moving the coordinate
+   * frame under the pointer and making the element jump by that much.
+   */
+  const origin = frozenOrigin ?? { x: bounds.minX, y: bounds.minY }
 
   function toLocalPoint(clientX: number, clientY: number) {
     const svg = svgRef.current
     if (!svg) return { x: 0, y: 0 }
     const rect = svg.getBoundingClientRect()
-    return { x: clientX - rect.left, y: clientY - rect.top }
+    return { x: clientX - rect.left + origin.x, y: clientY - rect.top + origin.y }
   }
 
   /** every selectable key whose element intersects `rect` (global coords) */
@@ -155,7 +185,7 @@ export function Canvas({
     }
     for (const dim of schema.dimensions) {
       const l = layouts.get(dim.id)!
-      const dimRect = { x: dim.position.x, y: dim.position.y, w: DIM_WIDTH, h: DIM_HEIGHT }
+      const dimRect = { x: dim.position.x, y: dim.position.y, w: l.boxWidth, h: DIM_HEIGHT }
       if (rectsOverlap(rect, dimRect)) keys.push(dimKey(dim.id))
 
       for (const p of dim.parameters) {
@@ -217,6 +247,7 @@ export function Canvas({
     movedRef.current = false
     dragRef.current = state
     dragStartRef.current = toLocalPoint(e.clientX, e.clientY)
+    setFrozenOrigin({ x: bounds.minX, y: bounds.minY })
     ;(e.target as Element).setPointerCapture(e.pointerId)
   }
 
@@ -393,6 +424,7 @@ export function Canvas({
       })
     }
     setMarqueeRect(null)
+    setFrozenOrigin(null)
     dragRef.current = null
     dragStartRef.current = null
     commit()
@@ -523,14 +555,18 @@ export function Canvas({
         ref={svgRef}
         width={bounds.width}
         height={bounds.height}
-        viewBox={`0 0 ${bounds.width} ${bounds.height}`}
+        viewBox={`${origin.x} ${origin.y} ${bounds.width} ${bounds.height}`}
         className="block select-none"
+        style={{ fontFamily: style.fontFamily, fontSize: style.fontSize }}
         onPointerMove={onDrag}
         onPointerUp={endDrag}
+        // a cancelled gesture must release the frozen viewport origin too,
+        // or the canvas stays clipped until the next drag
+        onPointerCancel={endDrag}
       >
         <rect
-          x={0}
-          y={0}
+          x={origin.x}
+          y={origin.y}
           width={bounds.width}
           height={bounds.height}
           fill="#f8fafc"
@@ -544,8 +580,11 @@ export function Canvas({
           return fact.dimensionIds.map((dimId) => {
             const dim = schema.dimensions.find((d) => d.id === dimId)
             if (!dim) return null
-            const dimTargetX = dim.position.x + DIM_WIDTH / 2
-            const dimTargetY = dim.position.y + DIM_HEIGHT
+            const dimTargetX = dim.position.x + layouts.get(dim.id)!.boxWidth / 2
+            // leave the box on the side the hierarchy does not occupy, so the
+            // link doesn't run straight through a downward-oriented dimension
+            const dimTargetY =
+              dim.orientation === 'down' ? dim.position.y : dim.position.y + DIM_HEIGHT
             const factTopX = Math.min(Math.max(dimTargetX, fact.position.x), fact.position.x + width)
             return (
               <line
@@ -584,11 +623,11 @@ export function Canvas({
               />
               <text
                 x={fx + width / 2}
-                y={fy + 22}
+                y={fy + 22 * s}
                 textAnchor="middle"
                 fill="#ffffff"
                 fontWeight={700}
-                fontSize={14}
+                fontSize={`${SCALE.factName}em`}
                 onPointerDown={(e) => startFactDrag(fact, e)}
                 onClick={(e) => selectClick(factKey(fact.id), e)}
                 onDoubleClick={(e) =>
@@ -605,9 +644,9 @@ export function Canvas({
                 <g key={m.id}>
                   <text
                     x={fx + 12}
-                    y={fy + 42 + i * 20}
+                    y={fy + (42 + i * 20) * s}
                     fill={selection.has(measureKey(fact.id, m.id)) ? '#93c5fd' : '#e2e8f0'}
-                    fontSize={12}
+                    fontSize={`${SCALE.measure}em`}
                     className="cursor-pointer"
                     onClick={(e) => selectClick(measureKey(fact.id, m.id), e)}
                     onDoubleClick={(e) =>
@@ -628,10 +667,10 @@ export function Canvas({
               ))}
               <text
                 x={fx + width / 2}
-                y={fy + height - 6}
+                y={fy + height - 6 * s}
                 textAnchor="middle"
                 fill="#93c5fd"
-                fontSize={12}
+                fontSize={`${SCALE.measure}em`}
                 className="cursor-pointer"
                 onClick={(e) => {
                   e.stopPropagation()
@@ -672,6 +711,7 @@ export function Canvas({
               onSelectClick={selectClick}
               onRename={startRename}
               dispatch={dispatch}
+              style={style}
             />
           )
         })}
@@ -749,9 +789,11 @@ function DimensionNode({
   onSelectClick,
   onRename,
   dispatch,
+  style,
 }: {
   dim: Dimension
   layout: ReturnType<typeof layoutDimension>
+  style: TextStyle
   selection: Set<string>
   onDragStart: (e: React.PointerEvent) => void
   onParamDragStart: (paramId: string, e: React.PointerEvent) => void
@@ -802,12 +844,14 @@ function DimensionNode({
     return 'strict'
   }
 
+  const s = style.fontSize / DEFAULT_TEXT_STYLE.fontSize
+
   return (
     <g transform={`translate(${x},${y})`}>
       {/* dimension box background, drawn first so it never paints over a
           parameter's label (the key sits right on the box's right edge) */}
       <rect
-        width={DIM_WIDTH}
+        width={layout.boxWidth}
         height={DIM_HEIGHT}
         fill="#ffffff"
         stroke={isDimSelected ? SELECTED_COLOR : '#1e293b'}
@@ -868,7 +912,7 @@ function DimensionNode({
                 key={c.key}
                 x={c.x}
                 y={c.y}
-                fontSize={9}
+                fontSize={`${SCALE.cardinality}em`}
                 fill="#64748b"
                 textAnchor="middle"
                 dominantBaseline="middle"
@@ -888,13 +932,19 @@ function DimensionNode({
         if (!p) return null
         const color = HIERARCHY_COLORS[i % HIERARCHY_COLORS.length]
         const selected = selection.has(hierarchyKey(dim.id, h.id))
+        // the chip grows to its name instead of clipping it
+        const chipWidth = Math.max(
+          56,
+          Math.ceil(measureText(h.name, fontOf(style, SCALE.chip, 700))) + 12,
+        )
+        const chipHeight = 18 * s
         return (
           <g key={h.id} transform={`translate(${p.x},${p.y})`}>
             <rect
-              x={-28}
-              y={-9}
-              width={56}
-              height={18}
+              x={-chipWidth / 2}
+              y={-chipHeight / 2}
+              width={chipWidth}
+              height={chipHeight}
               rx={3}
               fill={color}
               stroke={selected ? '#1e3a8a' : 'none'}
@@ -915,10 +965,10 @@ function DimensionNode({
               onContextMenu={(e) => onHierarchyContextMenu(h.id, e)}
             />
             <text
-              y={4}
+              y={4 * s}
               textAnchor="middle"
               fill="#fff"
-              fontSize={9}
+              fontSize={`${SCALE.chip}em`}
               fontWeight={700}
               pointerEvents="none"
             >
@@ -948,9 +998,9 @@ function DimensionNode({
               <text
                 x={wl.labelX}
                 y={wl.labelY}
-                fontSize={11}
+                fontSize={`${SCALE.weakAttr}em`}
                 textDecoration="underline"
-                fill={selected ? SELECTED_COLOR : '#1e293b'}
+                fill={selected ? SELECTED_COLOR : style.color}
                 style={{ paintOrder: 'stroke', stroke: '#f8fafc', strokeWidth: 3 }}
                 className="cursor-move"
                 onPointerDown={(e) => onWeakAttrDragStart(p.id, wa.id, e)}
@@ -1010,11 +1060,11 @@ function DimensionNode({
               pointerEvents="none"
             />
             <text
-              y={PARAM_RADIUS + 13}
+              y={PARAM_RADIUS + 13 * s}
               textAnchor="middle"
-              fontSize={11}
+              fontSize={`${SCALE.param}em`}
               fontWeight={isKey ? 700 : 400}
-              fill={selected ? SELECTED_COLOR : '#1e293b'}
+              fill={selected ? SELECTED_COLOR : style.color}
               style={{ paintOrder: 'stroke', stroke: '#f8fafc', strokeWidth: 3 }}
               pointerEvents="none"
             >
@@ -1026,12 +1076,12 @@ function DimensionNode({
 
       {/* dimension name + delete, drawn above the background rect */}
       <text
-        x={DIM_WIDTH / 2}
-        y={DIM_HEIGHT / 2 + 5}
+        x={layout.boxWidth / 2}
+        y={DIM_HEIGHT / 2 + 5 * s}
         textAnchor="middle"
         fontWeight={700}
-        fontSize={13}
-        fill="#1e293b"
+        fontSize={`${SCALE.dimName}em`}
+        fill={style.color}
         onPointerDown={onDragStart}
         onClick={(e) => onSelectClick(dimKey(dim.id), e)}
         onDoubleClick={(e) =>
