@@ -11,7 +11,6 @@ import {
 import { sidePanelElementId } from '../selection'
 import { wouldCreateCycle } from '../state'
 import type { SchemaDispatch } from '../state'
-import { DEFAULT_TEXT_STYLE, FONT_FAMILIES, FONT_SIZE_RANGE } from '../textStyle'
 import type {
   AttributeDataType,
   Dimension,
@@ -19,11 +18,12 @@ import type {
   Measure,
   Parameter,
   Schema,
-  TextStyle,
 } from '../types'
 import type { Warning } from '../validate'
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu'
 import { FolderPanel, type FolderState } from './FolderPanel'
+import { Section, type Folds } from './Section'
+import { TextStylePanel } from './TextStylePanel'
 
 const DATA_TYPE_LABELS: Record<AttributeDataType, string> = {
   undefined: '—',
@@ -82,43 +82,6 @@ function DataTypeSelect({
 /** sections that exist regardless of the schema's contents; the rest are
  * derived per fact and per dimension. "Tout replier" folds both sets. */
 const FIXED_SECTIONS = ['folder', 'text-style']
-
-/** open/closed state of the panel's collapsible sections, keyed by a stable
- * section id (`folder`, `text-style`, `fact:<id>`, `dim:<id>`, `params:<id>`,
- * `hier:<id>`) */
-export interface Folds {
-  isOpen: (id: string) => boolean
-  setOpen: (id: string, open: boolean) => void
-}
-
-/** a <details> whose open state lives in `folds`, so "tout replier" and the
- * canvas-selection reveal can drive it. `data-section` lets that reveal walk
- * up from a focused input to every section currently hiding it. */
-function Section({
-  id,
-  folds,
-  className,
-  summary,
-  children,
-}: {
-  id: string
-  folds: Folds
-  className?: string
-  summary: React.ReactNode
-  children: React.ReactNode
-}) {
-  return (
-    <details
-      data-section={id}
-      className={className}
-      open={folds.isOpen(id)}
-      onToggle={(e) => folds.setOpen(id, e.currentTarget.open)}
-    >
-      {summary}
-      {children}
-    </details>
-  )
-}
 
 /** the collapsible sections that must be open for a selection key's field to
  * be visible, outermost first. Mirrors the ids the Section wrappers use. */
@@ -257,10 +220,8 @@ export function SidePanel({
         id="folder"
         folds={folds}
         className="rounded-lg border border-slate-200 p-2"
-        summary={
-          <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Dossier
-          </summary>
+        header={
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Dossier</h2>
         }
       >
         <div className="mt-2">
@@ -339,92 +300,6 @@ export function SidePanel({
   )
 }
 
-/** one text appearance for the whole diagram; lives in the schema so it is
- * exported with it. Every control writes the full style, coalesced per field
- * so dragging a colour picker stays a single undo step. */
-function TextStylePanel({
-  schema,
-  dispatch,
-  commit,
-  folds,
-}: {
-  schema: Schema
-  dispatch: SchemaDispatch
-  commit: () => void
-  folds: Folds
-}) {
-  const style = schema.textStyle ?? DEFAULT_TEXT_STYLE
-  const set = (patch: Partial<TextStyle>, coalesceKey: string) =>
-    dispatch({ type: 'SET_TEXT_STYLE', textStyle: { ...style, ...patch } }, coalesceKey)
-
-  return (
-    <Section
-      id="text-style"
-      folds={folds}
-      className="rounded-lg border border-slate-200 p-2"
-      summary={
-        <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Texte
-        </summary>
-      }
-    >
-      <div className="mt-2 space-y-2">
-        <label className="flex items-center gap-2 text-xs text-slate-600">
-          <span className="w-14 shrink-0">Police</span>
-          <select
-            className="w-full rounded border border-slate-300 bg-white px-1 py-1 text-xs focus:border-blue-400 focus:outline-none"
-            value={style.fontFamily}
-            onChange={(e) => set({ fontFamily: e.target.value }, 'text-style-family')}
-            onBlur={commit}
-          >
-            {FONT_FAMILIES.map((f) => (
-              <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>
-                {f.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="flex items-center gap-2 text-xs text-slate-600">
-          <span className="w-14 shrink-0">Taille</span>
-          <input
-            type="range"
-            min={FONT_SIZE_RANGE.min}
-            max={FONT_SIZE_RANGE.max}
-            step={1}
-            className="w-full"
-            value={style.fontSize}
-            onChange={(e) => set({ fontSize: Number(e.target.value) }, 'text-style-size')}
-            onPointerUp={commit}
-          />
-          <span className="w-8 shrink-0 text-right tabular-nums">{style.fontSize}</span>
-        </label>
-
-        <label className="flex items-center gap-2 text-xs text-slate-600">
-          <span className="w-14 shrink-0">Couleur</span>
-          <input
-            type="color"
-            className="h-7 w-full cursor-pointer rounded border border-slate-300 bg-white"
-            value={style.color}
-            onChange={(e) => set({ color: e.target.value }, 'text-style-color')}
-            onBlur={commit}
-          />
-          <button
-            type="button"
-            className="shrink-0 text-[10px] font-medium text-blue-600 hover:underline"
-            onClick={() => {
-              dispatch({ type: 'SET_TEXT_STYLE', textStyle: DEFAULT_TEXT_STYLE })
-              commit()
-            }}
-          >
-            Défaut
-          </button>
-        </label>
-      </div>
-    </Section>
-  )
-}
-
 function FactPanel({
   fact,
   schema,
@@ -445,13 +320,12 @@ function FactPanel({
       id={`fact:${fact.id}`}
       folds={folds}
       className="rounded-lg border border-slate-200 p-2"
-      summary={
-        <summary className="flex cursor-pointer list-none items-center gap-1">
+      header={
+        <div className="flex w-full items-center gap-1">
           <input
             id={`fact-name-input-${fact.id}`}
             className="w-full rounded-md border border-slate-300 px-2 py-1.5 font-medium focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
             value={fact.name}
-            onClick={(e) => e.stopPropagation()}
             onChange={(e) =>
               dispatch({ type: 'RENAME_FACT', factId: fact.id, name: e.target.value }, `fact-name-${fact.id}`)
             }
@@ -461,7 +335,7 @@ function FactPanel({
             openMenu={openMenu}
             items={factMenuItems(fact, dispatch, () => focusAndSelect(`fact-name-input-${fact.id}`))}
           />
-        </summary>
+        </div>
       }
     >
       <div className="mt-2 space-y-1">
@@ -570,14 +444,13 @@ function DimensionPanel({
     <Section
       id={`dim:${dim.id}`}
       folds={folds}
-      className="rounded-lg border border-slate-200 open:bg-slate-50/60"
-      summary={
-        <summary className="flex cursor-pointer list-none items-center gap-1 rounded-t-lg px-2 py-2">
+      className="rounded-lg border border-slate-200"
+      header={
+        <div className="flex w-full items-center gap-1 py-2 pr-2">
           <input
             id={`dim-name-input-${dim.id}`}
             className="w-full rounded border border-slate-300 px-2 py-1 text-sm font-semibold focus:border-blue-400 focus:outline-none"
             value={dim.name}
-            onClick={(e) => e.stopPropagation()}
             onChange={(e) =>
               dispatch(
                 {
@@ -596,17 +469,17 @@ function DimensionPanel({
               focusAndSelect(`dim-name-input-${dim.id}`),
             )}
           />
-        </summary>
+        </div>
       }
     >
       <div className="space-y-2 border-t border-slate-200 px-2 py-2">
         <Section
           id={`params:${dim.id}`}
           folds={folds}
-          summary={
-            <summary className="mb-1 cursor-pointer list-none text-xs font-semibold uppercase tracking-wide text-slate-500">
+          header={
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
               Paramètres
-            </summary>
+            </h3>
           }
         >
           <div className="space-y-2">
@@ -626,10 +499,10 @@ function DimensionPanel({
         <Section
           id={`hier:${dim.id}`}
           folds={folds}
-          summary={
-            <summary className="mb-1 cursor-pointer list-none text-xs font-semibold uppercase tracking-wide text-slate-500">
+          header={
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
               Hiérarchies
-            </summary>
+            </h3>
           }
         >
           <div className="space-y-1">
