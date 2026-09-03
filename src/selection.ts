@@ -10,6 +10,30 @@ export const hierarchyKey = (dimId: string, hierarchyId: string) => `hier:${dimI
 export const edgeKey = (dimId: string, from: string, to: string) => `edge:${dimId}:${from}:${to}`
 export const measureKey = (factId: string, measureId: string) => `measure:${factId}:${measureId}`
 
+/** id of the side-panel field that shows this selected element, so a canvas
+ * click can scroll/focus it there. Mirrors the `*-name-input-*` id scheme
+ * SidePanel already uses for the rename shortcut. Edges have no panel row
+ * of their own (they're drawn as connectors between two parameter rows). */
+export function sidePanelElementId(key: string): string | null {
+  const [kind, ...rest] = key.split(':')
+  switch (kind) {
+    case 'dim':
+      return `dim-name-input-${rest[0]}`
+    case 'fact':
+      return `fact-name-input-${rest[0]}`
+    case 'param':
+      return `param-name-input-${rest[1]}`
+    case 'wa':
+      return `wa-name-input-${rest[2]}`
+    case 'hier':
+      return `hier-name-input-${rest[1]}`
+    case 'measure':
+      return `measure-name-input-${rest[1]}`
+    default:
+      return null
+  }
+}
+
 export function selectOnly(key: string): Set<string> {
   return new Set([key])
 }

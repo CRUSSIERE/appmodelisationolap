@@ -7,6 +7,7 @@ import {
   hierarchyMenuItems,
   measureMenuItems,
   paramBaseMenuItems,
+  paramHierarchyMenuItems,
   weakAttrMenuItems,
 } from '../elementActions'
 import { DIM_HEIGHT, DIM_WIDTH, PARAM_RADIUS, layoutDimension } from '../layout'
@@ -408,35 +409,13 @@ export function Canvas({
   /** items only meaningful on a hierarchy-carrying parameter, appended after
    * the generic rename/duplicate/copy/delete set (see paramBaseMenuItems) */
   function paramHierarchyItems(dim: Dimension, paramId: string): MenuItem[] {
-    const isKey = paramId === dim.keyParameterId
-    const terminalHierarchies = dim.hierarchies.filter(
-      (h) => h.path[h.path.length - 1] === paramId,
-    )
-    const items: MenuItem[] = [
+    return [
       {
         label: 'Ajouter un attribut faible',
         onClick: () => dispatch({ type: 'ADD_WEAK_ATTRIBUTE', dimId: dim.id, paramId }),
       },
+      ...paramHierarchyMenuItems(dim, paramId, dispatch),
     ]
-    if (isKey && dim.parameters.length >= 2) {
-      items.push({
-        label:
-          dim.hierarchies.length === 0
-            ? 'Ajouter une hiérarchie'
-            : 'Ajouter une hiérarchie alternative',
-        onClick: () => dispatch({ type: 'ADD_HIERARCHY', dimId: dim.id }),
-      })
-    }
-    for (const h of terminalHierarchies) {
-      items.push({
-        label:
-          terminalHierarchies.length > 1
-            ? `Ajouter un niveau au-dessus (${h.name})`
-            : 'Ajouter un niveau au-dessus',
-        onClick: () => dispatch({ type: 'ADD_LEVEL_ABOVE', dimId: dim.id, hierarchyId: h.id }),
-      })
-    }
-    return items
   }
 
   function onDimContextMenu(dim: Dimension, e: React.MouseEvent) {

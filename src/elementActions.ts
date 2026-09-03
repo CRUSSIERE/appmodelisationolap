@@ -1,5 +1,6 @@
 import type { MenuItem } from './components/ContextMenu'
 import type { SchemaDispatch } from './state'
+import { wouldCreateCycle } from './state'
 import type { Dimension, Fact, Hierarchy, HierarchyLinkType, Measure, Parameter, Schema, WeakAttribute } from './types'
 
 const LINK_TYPE_LABELS: Record<HierarchyLinkType, string> = {
@@ -146,6 +147,62 @@ export function paramBaseMenuItems(
       danger: true,
       onClick: () => dispatch({ type: 'DELETE_PARAMETER', dimId: dim.id, paramId: param.id }),
     })
+  }
+  return items
+}
+
+/** hierarchy-related actions anchored on a parameter: starting a new
+ * hierarchy from it, and — for every hierarchy it terminates — adding a
+ * level above it (new, or linking an existing dimension parameter to
+ * create a shared/converging level). Shared by the canvas context menu and
+ * the side panel's parameter kebab. */
+export function paramHierarchyMenuItems(
+  dim: Dimension,
+  paramId: string,
+  dispatch: SchemaDispatch,
+): MenuItem[] {
+  const isKey = paramId === dim.keyParameterId
+  const items: MenuItem[] = []
+  if (dim.parameters.length >= 2) {
+    items.push({
+      label: isKey
+        ? dim.hierarchies.length === 0
+          ? 'Ajouter une hiérarchie'
+          : 'Ajouter une hiérarchie alternative'
+        : 'Créer une hiérarchie depuis ici',
+      onClick: () =>
+        dispatch({
+          type: 'ADD_HIERARCHY',
+          dimId: dim.id,
+          fromParamId: isKey ? undefined : paramId,
+        }),
+    })
+  }
+  const terminalHierarchies = dim.hierarchies.filter(
+    (h) => h.path[h.path.length - 1] === paramId,
+  )
+  const otherParams = dim.parameters.filter((p) => p.id !== paramId)
+  for (const h of terminalHierarchies) {
+    const suffix = terminalHierarchies.length > 1 ? ` (${h.name})` : ''
+    items.push({
+      label: `Ajouter un niveau au-dessus${suffix}`,
+      onClick: () => dispatch({ type: 'ADD_LEVEL_ABOVE', dimId: dim.id, hierarchyId: h.id }),
+    })
+    const linkable = otherParams.filter(
+      (p) => !h.path.includes(p.id) && !wouldCreateCycle(dim, paramId, p.id),
+    )
+    for (const p of linkable) {
+      items.push({
+        label: `Lier "${p.name}" au-dessus${suffix}`,
+        onClick: () =>
+          dispatch({
+            type: 'ADD_LEVEL_ABOVE',
+            dimId: dim.id,
+            hierarchyId: h.id,
+            existingParamId: p.id,
+          }),
+      })
+    }
   }
   return items
 }

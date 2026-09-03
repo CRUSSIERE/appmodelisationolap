@@ -80,7 +80,13 @@ function App() {
           setSelection={setSelection}
           commit={commit}
         />
-        <SidePanel schema={schema} dispatch={dispatch} warnings={warnings} commit={commit} />
+        <SidePanel
+          schema={schema}
+          dispatch={dispatch}
+          warnings={warnings}
+          commit={commit}
+          selection={selection}
+        />
       </div>
     </div>
   )

@@ -1,12 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   dimensionMenuItems,
   factMenuItems,
   hierarchyMenuItems,
   measureMenuItems,
   paramBaseMenuItems,
+  paramHierarchyMenuItems,
   weakAttrMenuItems,
 } from '../elementActions'
+import { sidePanelElementId } from '../selection'
+import { wouldCreateCycle } from '../state'
 import type { SchemaDispatch } from '../state'
 import type { AttributeDataType, Dimension, Fact, Measure, Parameter, Schema } from '../types'
 import type { Warning } from '../validate'
@@ -71,13 +74,28 @@ export function SidePanel({
   dispatch,
   warnings,
   commit,
+  selection,
 }: {
   schema: Schema
   dispatch: SchemaDispatch
   warnings: Warning[]
   commit: () => void
+  selection: Set<string>
 }) {
   const [menu, setMenu] = useState<MenuState | null>(null)
+
+  // reveal the most recently selected canvas element in this panel: open
+  // its (collapsible) dimension section if needed, scroll it into view and
+  // focus it, mirroring the rename shortcut's focusAndSelect target ids
+  useEffect(() => {
+    if (selection.size === 0) return
+    const id = sidePanelElementId([...selection].at(-1)!)
+    const el = id ? (document.getElementById(id) as HTMLInputElement | null) : null
+    if (!el) return
+    el.closest('details')?.setAttribute('open', '')
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.focus()
+  }, [selection])
 
   function openMenu(e: React.MouseEvent, items: MenuItem[]) {
     e.preventDefault()
@@ -371,6 +389,36 @@ function DimensionPanel({
                 >
                   + niveau
                 </button>
+                {(() => {
+                  const from = h.path[h.path.length - 1]
+                  const linkableParams = dim.parameters.filter(
+                    (p) => !h.path.includes(p.id) && !wouldCreateCycle(dim, from, p.id),
+                  )
+                  if (linkableParams.length === 0) return null
+                  return (
+                    <select
+                      className="w-20 shrink-0 rounded border border-slate-300 bg-white px-1 py-1 text-xs text-slate-600 focus:border-blue-400 focus:outline-none"
+                      title="Lier un niveau existant au-dessus"
+                      value=""
+                      onChange={(e) => {
+                        if (!e.target.value) return
+                        dispatch({
+                          type: 'ADD_LEVEL_ABOVE',
+                          dimId: dim.id,
+                          hierarchyId: h.id,
+                          existingParamId: e.target.value,
+                        })
+                      }}
+                    >
+                      <option value="">Lier…</option>
+                      {linkableParams.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  )
+                })()}
                 <Kebab
                   openMenu={openMenu}
                   items={hierarchyMenuItems(dim, h, dispatch, () =>
@@ -442,9 +490,12 @@ function ParameterPanel({
         />
         <Kebab
           openMenu={openMenu}
-          items={paramBaseMenuItems(dim, param, dispatch, () =>
-            focusAndSelect(`param-name-input-${param.id}`),
-          )}
+          items={[
+            ...paramBaseMenuItems(dim, param, dispatch, () =>
+              focusAndSelect(`param-name-input-${param.id}`),
+            ),
+            ...paramHierarchyMenuItems(dim, param.id, dispatch),
+          ]}
         />
       </div>
 

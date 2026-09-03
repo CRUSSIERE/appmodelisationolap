@@ -64,9 +64,9 @@ export type Action =
       paramId: string
       weakAttrId: string
     }
-  | { type: 'ADD_LEVEL_ABOVE'; dimId: string; hierarchyId: string }
+  | { type: 'ADD_LEVEL_ABOVE'; dimId: string; hierarchyId: string; existingParamId?: string }
   | { type: 'DELETE_PARAMETER'; dimId: string; paramId: string }
-  | { type: 'ADD_HIERARCHY'; dimId: string }
+  | { type: 'ADD_HIERARCHY'; dimId: string; fromParamId?: string }
   | { type: 'RENAME_HIERARCHY'; dimId: string; hierarchyId: string; name: string }
   | { type: 'DELETE_HIERARCHY'; dimId: string; hierarchyId: string }
   | { type: 'DUPLICATE_HIERARCHY'; dimId: string; hierarchyId: string }
@@ -142,6 +142,44 @@ function pruneOrphanParameters(dim: Dimension): Dimension {
 
 function hierarchyEdges(h: Hierarchy): string[] {
   return h.path.slice(0, -1).map((from, i) => `${from}->${h.path[i + 1]}`)
+}
+
+/** the prefix (key...paramId) of the first hierarchy whose path reaches
+ * paramId — used to seed a new hierarchy branching off an existing
+ * attribute. Falls back to just the key when paramId is itself the key or
+ * unreferenced (shouldn't happen: every non-key parameter lives in at least
+ * one hierarchy path, see pruneOrphanParameters). */
+function findPrefixToParam(dim: Dimension, paramId: string): string[] {
+  if (paramId === dim.keyParameterId) return [dim.keyParameterId]
+  for (const h of dim.hierarchies) {
+    const idx = h.path.indexOf(paramId)
+    if (idx !== -1) return h.path.slice(0, idx + 1)
+  }
+  return [dim.keyParameterId]
+}
+
+/** true if adding edge from->to would create a cycle in the dimension-wide
+ * graph formed by the union of every hierarchy's edges (i.e. `to` can
+ * already reach `from`) */
+export function wouldCreateCycle(dim: Dimension, from: string, to: string): boolean {
+  const adjacency = new Map<string, string[]>()
+  for (const h of dim.hierarchies) {
+    for (let i = 0; i < h.path.length - 1; i++) {
+      const a = h.path[i]
+      const b = h.path[i + 1]
+      adjacency.set(a, [...(adjacency.get(a) ?? []), b])
+    }
+  }
+  const stack = [to]
+  const seen = new Set<string>()
+  while (stack.length > 0) {
+    const node = stack.pop()!
+    if (node === from) return true
+    if (seen.has(node)) continue
+    seen.add(node)
+    stack.push(...(adjacency.get(node) ?? []))
+  }
+  return false
 }
 
 /** drops a hierarchy once every one of its edges is also carried by another
@@ -389,6 +427,23 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
 
     case 'ADD_LEVEL_ABOVE':
       return updateDim(schema, action.dimId, (d) => {
+        if (action.existingParamId) {
+          const h = d.hierarchies.find((h) => h.id === action.hierarchyId)
+          if (!h) return d
+          const paramId = action.existingParamId
+          // already in this path (no-op), or linking it would make the
+          // dimension-wide hierarchy graph cyclic
+          if (h.path.includes(paramId)) return d
+          const from = h.path[h.path.length - 1]
+          if (wouldCreateCycle(d, from, paramId)) return d
+          const linked = updateHierarchy(d, action.hierarchyId, (h) => ({
+            ...h,
+            path: [...h.path, paramId],
+          }))
+          // the linked-to edge may already exist wholesale on a sibling
+          // hierarchy, making this one now fully redundant
+          return pruneRedundantHierarchies(linked, new Set([action.hierarchyId]))
+        }
         const newParam: Parameter = {
           id: makeId('p'),
           name: 'nouveau_niveau',
@@ -425,11 +480,12 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
       return updateDim(schema, action.dimId, (d) => {
         // GraphicOLAP: "Hierarchies requires at least 2 parameters"
         if (d.parameters.length < 2) return d
+        const path = action.fromParamId ? findPrefixToParam(d, action.fromParamId) : [d.keyParameterId]
         return {
           ...d,
           hierarchies: [
             ...d.hierarchies,
-            { id: makeId('h'), name: 'NOUVELLE_HIERARCHIE', path: [d.keyParameterId] },
+            { id: makeId('h'), name: 'NOUVELLE_HIERARCHIE', path },
           ],
         }
       })
