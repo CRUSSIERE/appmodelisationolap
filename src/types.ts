@@ -18,12 +18,17 @@ export type AttributeDataType =
   | 'date'
   | 'binary'
 
-/** roll-up cardinality/completeness between two adjacent hierarchy levels */
+/** roll-up cardinality/completeness between two adjacent hierarchy levels.
+ * Mirrors GraphicOLAP's OlapLinkType, `none` included: strictness and
+ * completeness are properties of the whole link, which is why mixed pairs
+ * such as `1,n → 0,1` are not part of the set. */
 export type HierarchyLinkType =
   | 'strict'
   | 'non_strict'
   | 'strict_incomplete'
   | 'non_strict_incomplete'
+  /** cardinality left unspecified — the edge is drawn without labels */
+  | 'none'
 
 /** optional manual override, local to the dimension; absent = auto-layout */
 export interface WeakAttribute extends NamedItem {
@@ -87,4 +92,7 @@ export interface Schema {
   dimensions: Dimension[]
   /** absent = DEFAULT_TEXT_STYLE; backfilled on import */
   textStyle?: TextStyle
+  /** absent = true; hides every roll-up cardinality label at once, on top of
+   * the per-link 'none' type */
+  showCardinalities?: boolean
 }

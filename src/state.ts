@@ -97,6 +97,7 @@ export type Action =
     }
   | { type: 'SET_DIMENSION_ORIENTATION'; dimId: string; orientation: Orientation }
   | { type: 'SET_TEXT_STYLE'; textStyle: TextStyle }
+  | { type: 'SET_SHOW_CARDINALITIES'; show: boolean }
   | { type: 'DUPLICATE_DIMENSION'; dimId: string }
   | { type: 'DUPLICATE_PARAMETER'; dimId: string; paramId: string }
   | { type: 'DUPLICATE_WEAK_ATTRIBUTE'; dimId: string; paramId: string; weakAttrId: string }
@@ -587,6 +588,9 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
 
     case 'SET_TEXT_STYLE':
       return { ...schema, textStyle: action.textStyle }
+
+    case 'SET_SHOW_CARDINALITIES':
+      return { ...schema, showCardinalities: action.show }
 
     case 'DUPLICATE_DIMENSION': {
       const source = schema.dimensions.find((d) => d.id === action.dimId)

@@ -94,6 +94,10 @@ function assertValidSchema(data: unknown): asserts data is Schema {
     }
   }
 
+  if (s.showCardinalities !== undefined && typeof s.showCardinalities !== 'boolean') {
+    fail('"showCardinalities" doit être un booléen')
+  }
+
   if (!Array.isArray(s.dimensions)) fail('"dimensions" doit être un tableau')
   ;(s.dimensions as unknown[]).forEach((dim, i) => {
     if (!isNamedItem(dim)) fail(`dimensions[${i}] est invalide`)
@@ -156,6 +160,7 @@ function normalizeSchema(schema: Schema): Schema {
   return {
     ...schema,
     textStyle: { ...DEFAULT_TEXT_STYLE, ...schema.textStyle },
+    showCardinalities: schema.showCardinalities ?? true,
     facts: schema.facts.map((f) => ({
       ...f,
       position: f.position ?? { x, y },

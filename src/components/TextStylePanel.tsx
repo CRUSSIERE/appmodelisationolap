@@ -29,7 +29,7 @@ export function TextStylePanel({
       folds={folds}
       className="rounded-lg border border-slate-200 p-2"
       header={
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Texte</h2>
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Affichage</h2>
       }
     >
       <div className="mt-2 space-y-2">
@@ -83,6 +83,19 @@ export function TextStylePanel({
           >
             Défaut
           </button>
+        </label>
+
+        <label className="flex items-center gap-2 border-t border-slate-200 pt-2 text-xs text-slate-600">
+          <input
+            type="checkbox"
+            className="cursor-pointer"
+            checked={schema.showCardinalities ?? true}
+            onChange={(e) => {
+              dispatch({ type: 'SET_SHOW_CARDINALITIES', show: e.target.checked })
+              commit()
+            }}
+          />
+          Afficher les cardinalités
         </label>
       </div>
     </Section>

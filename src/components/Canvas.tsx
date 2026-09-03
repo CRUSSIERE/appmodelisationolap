@@ -30,12 +30,14 @@ import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu'
 const HIERARCHY_COLORS = ['#2563eb', '#b45309', '#0d9488', '#be185d', '#4d7c0f']
 const SELECTED_COLOR = '#2563eb'
 /** [child-end, parent-end] cardinalities drawn on a hierarchy edge — same
- * pairs as the link-type labels in elementActions.ts */
-const LINK_TYPE_ENDS: Record<HierarchyLinkType, [string, string]> = {
+ * pairs as the link-type labels in elementActions.ts. `none` leaves the edge
+ * unlabelled. */
+const LINK_TYPE_ENDS: Record<HierarchyLinkType, [string, string] | null> = {
   strict: ['1,n', '1,1'],
   non_strict: ['1,n', '1,n'],
   strict_incomplete: ['0,n', '0,1'],
   non_strict_incomplete: ['0,n', '0,n'],
+  none: null,
 }
 /** distance from a parameter circle at which its cardinality label sits */
 const CARD_LABEL_OFFSET = 24
@@ -108,6 +110,7 @@ export function Canvas({
   const dragStartRef = useRef<{ x: number; y: number } | null>(null)
 
   const style = schema.textStyle ?? DEFAULT_TEXT_STYLE
+  const showCardinalities = schema.showCardinalities ?? true
   /** every hard-coded vertical offset below was authored at the default base
    * size; scaling them keeps the boxes proportional when the size changes */
   const s = style.fontSize / DEFAULT_TEXT_STYLE.fontSize
@@ -712,6 +715,7 @@ export function Canvas({
               onRename={startRename}
               dispatch={dispatch}
               style={style}
+              showCardinalities={showCardinalities}
             />
           )
         })}
@@ -790,10 +794,12 @@ function DimensionNode({
   onRename,
   dispatch,
   style,
+  showCardinalities,
 }: {
   dim: Dimension
   layout: ReturnType<typeof layoutDimension>
   style: TextStyle
+  showCardinalities: boolean
   selection: Set<string>
   onDragStart: (e: React.PointerEvent) => void
   onParamDragStart: (paramId: string, e: React.PointerEvent) => void
@@ -869,7 +875,8 @@ function DimensionNode({
         const p1 = layout.paramPos[to]
         if (!p0 || !p1) return null
         const selected = selection.has(edgeKey(dim.id, from, to))
-        const [fromCard, toCard] = LINK_TYPE_ENDS[edgeLinkType(from, to)]
+        // hidden either for this edge alone ('none') or diagram-wide
+        const ends = showCardinalities ? LINK_TYPE_ENDS[edgeLinkType(from, to)] : null
         // unit vector along the edge + its normal, so each label sits a fixed
         // distance from its circle and just off the trait
         const len = Math.hypot(p1.x - p0.x, p1.y - p0.y) || 1
@@ -878,10 +885,12 @@ function DimensionNode({
         const t = Math.min(CARD_LABEL_OFFSET, len / 2)
         const nx = uy * CARD_LABEL_LIFT
         const ny = -ux * CARD_LABEL_LIFT
-        const cards: { key: string; x: number; y: number; text: string }[] = [
-          { key: 'from', x: p0.x + ux * t + nx, y: p0.y + uy * t + ny, text: fromCard },
-          { key: 'to', x: p1.x - ux * t + nx, y: p1.y - uy * t + ny, text: toCard },
-        ]
+        const cards: { key: string; x: number; y: number; text: string }[] = ends
+          ? [
+              { key: 'from', x: p0.x + ux * t + nx, y: p0.y + uy * t + ny, text: ends[0] },
+              { key: 'to', x: p1.x - ux * t + nx, y: p1.y - uy * t + ny, text: ends[1] },
+            ]
+          : []
         return (
           <g key={`${from}-${to}`}>
             <line
@@ -905,8 +914,9 @@ function DimensionNode({
               onClick={(e) => onSelectClick(edgeKey(dim.id, from, to), e)}
               onContextMenu={(e) => onEdgeContextMenu(from, to, e)}
             />
-            {/* cardinality/completeness at each end of the roll-up, always
-                shown ('strict' included) so every link reads on its own */}
+            {/* cardinality/completeness at each end of the roll-up. Shown for
+                every link type including 'strict', so a labelled edge reads
+                on its own; empty when hidden per-link or diagram-wide. */}
             {cards.map((c) => (
               <text
                 key={c.key}

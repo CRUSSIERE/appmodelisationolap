@@ -8,6 +8,7 @@ const LINK_TYPE_LABELS: Record<HierarchyLinkType, string> = {
   non_strict: 'Non stricte (1,n → 1,n)',
   strict_incomplete: 'Stricte incomplète (0,n → 0,1)',
   non_strict_incomplete: 'Non stricte incomplète (0,n → 0,n)',
+  none: 'Aucune (masquer)',
 }
 
 function copyItem(name: string): MenuItem {
