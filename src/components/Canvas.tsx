@@ -28,12 +28,19 @@ import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu'
 
 const HIERARCHY_COLORS = ['#2563eb', '#b45309', '#0d9488', '#be185d', '#4d7c0f']
 const SELECTED_COLOR = '#2563eb'
-const LINK_TYPE_ABBR: Record<HierarchyLinkType, string> = {
-  strict: '',
-  non_strict: 'n,n',
-  strict_incomplete: '0,1',
-  non_strict_incomplete: '0,n',
+/** [child-end, parent-end] cardinalities drawn on a hierarchy edge — same
+ * pairs as the link-type labels in elementActions.ts */
+const LINK_TYPE_ENDS: Record<HierarchyLinkType, [string, string]> = {
+  strict: ['1,n', '1,1'],
+  non_strict: ['1,n', '1,n'],
+  strict_incomplete: ['0,n', '0,1'],
+  non_strict_incomplete: ['0,n', '0,n'],
 }
+/** distance from a parameter circle at which its cardinality label sits */
+const CARD_LABEL_OFFSET = 24
+/** how far above the trait the label floats — enough to clear the hierarchy
+ * name-chip, which straddles the middle of an edge */
+const CARD_LABEL_LIFT = 14
 /** pointer must move this many px before a pointerdown counts as a drag, not a click */
 const DRAG_THRESHOLD = 3
 
@@ -818,8 +825,19 @@ function DimensionNode({
         const p1 = layout.paramPos[to]
         if (!p0 || !p1) return null
         const selected = selection.has(edgeKey(dim.id, from, to))
-        const linkType = edgeLinkType(from, to)
-        const abbr = LINK_TYPE_ABBR[linkType]
+        const [fromCard, toCard] = LINK_TYPE_ENDS[edgeLinkType(from, to)]
+        // unit vector along the edge + its normal, so each label sits a fixed
+        // distance from its circle and just off the trait
+        const len = Math.hypot(p1.x - p0.x, p1.y - p0.y) || 1
+        const ux = (p1.x - p0.x) / len
+        const uy = (p1.y - p0.y) / len
+        const t = Math.min(CARD_LABEL_OFFSET, len / 2)
+        const nx = uy * CARD_LABEL_LIFT
+        const ny = -ux * CARD_LABEL_LIFT
+        const cards: { key: string; x: number; y: number; text: string }[] = [
+          { key: 'from', x: p0.x + ux * t + nx, y: p0.y + uy * t + ny, text: fromCard },
+          { key: 'to', x: p1.x - ux * t + nx, y: p1.y - uy * t + ny, text: toCard },
+        ]
         return (
           <g key={`${from}-${to}`}>
             <line
@@ -843,21 +861,23 @@ function DimensionNode({
               onClick={(e) => onSelectClick(edgeKey(dim.id, from, to), e)}
               onContextMenu={(e) => onEdgeContextMenu(from, to, e)}
             />
-            {/* non-default cardinality/completeness shown as a small label
-                near the parent end; plain 'strict' stays unlabeled to avoid clutter */}
-            {abbr && (
+            {/* cardinality/completeness at each end of the roll-up, always
+                shown ('strict' included) so every link reads on its own */}
+            {cards.map((c) => (
               <text
-                x={p0.x + (p1.x - p0.x) * 0.3}
-                y={p0.y + (p1.y - p0.y) * 0.3 - 4}
+                key={c.key}
+                x={c.x}
+                y={c.y}
                 fontSize={9}
                 fill="#64748b"
                 textAnchor="middle"
+                dominantBaseline="middle"
                 pointerEvents="none"
                 style={{ paintOrder: 'stroke', stroke: '#f8fafc', strokeWidth: 3 }}
               >
-                {abbr}
+                {c.text}
               </text>
-            )}
+            ))}
           </g>
         )
       })}

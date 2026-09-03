@@ -64,7 +64,16 @@ export type Action =
       paramId: string
       weakAttrId: string
     }
-  | { type: 'ADD_LEVEL_ABOVE'; dimId: string; hierarchyId: string; existingParamId?: string }
+  /** without `hierarchyId`, the level starts a brand-new hierarchy hanging
+   * off `fromParamId` (defaults to the key) — the only way out of a fresh
+   * dimension, which has no hierarchy to add a level to yet */
+  | {
+      type: 'ADD_LEVEL_ABOVE'
+      dimId: string
+      hierarchyId?: string
+      fromParamId?: string
+      existingParamId?: string
+    }
   | { type: 'DELETE_PARAMETER'; dimId: string; paramId: string }
   | { type: 'ADD_HIERARCHY'; dimId: string; fromParamId?: string }
   | { type: 'RENAME_HIERARCHY'; dimId: string; hierarchyId: string; name: string }
@@ -146,16 +155,16 @@ function hierarchyEdges(h: Hierarchy): string[] {
 
 /** the prefix (key...paramId) of the first hierarchy whose path reaches
  * paramId — used to seed a new hierarchy branching off an existing
- * attribute. Falls back to just the key when paramId is itself the key or
- * unreferenced (shouldn't happen: every non-key parameter lives in at least
- * one hierarchy path, see pruneOrphanParameters). */
+ * attribute. A parameter no hierarchy references yet (a fresh duplicate, see
+ * DUPLICATE_PARAMETER) hangs straight off the key: the prefix always ends on
+ * paramId, so what gets appended next lands above the right attribute. */
 function findPrefixToParam(dim: Dimension, paramId: string): string[] {
   if (paramId === dim.keyParameterId) return [dim.keyParameterId]
   for (const h of dim.hierarchies) {
     const idx = h.path.indexOf(paramId)
     if (idx !== -1) return h.path.slice(0, idx + 1)
   }
-  return [dim.keyParameterId]
+  return [dim.keyParameterId, paramId]
 }
 
 /** true if adding edge from->to would create a cycle in the dimension-wide
@@ -426,23 +435,42 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
       )
 
     case 'ADD_LEVEL_ABOVE':
-      return updateDim(schema, action.dimId, (d) => {
+      return updateDim(schema, action.dimId, (dim) => {
+        // no target hierarchy: seed one on the spot so a single action still
+        // produces a visible edge (a lone one-parameter hierarchy would draw
+        // nothing — see pickChipEdge in layout.ts)
+        let d = dim
+        let hierarchyId = action.hierarchyId
+        if (!hierarchyId) {
+          hierarchyId = makeId('h')
+          d = {
+            ...dim,
+            hierarchies: [
+              ...dim.hierarchies,
+              {
+                id: hierarchyId,
+                name: 'NOUVELLE_HIERARCHIE',
+                path: findPrefixToParam(dim, action.fromParamId ?? dim.keyParameterId),
+              },
+            ],
+          }
+        }
         if (action.existingParamId) {
-          const h = d.hierarchies.find((h) => h.id === action.hierarchyId)
-          if (!h) return d
+          const h = d.hierarchies.find((h) => h.id === hierarchyId)
+          if (!h) return dim
           const paramId = action.existingParamId
           // already in this path (no-op), or linking it would make the
           // dimension-wide hierarchy graph cyclic
-          if (h.path.includes(paramId)) return d
+          if (h.path.includes(paramId)) return dim
           const from = h.path[h.path.length - 1]
-          if (wouldCreateCycle(d, from, paramId)) return d
-          const linked = updateHierarchy(d, action.hierarchyId, (h) => ({
+          if (wouldCreateCycle(d, from, paramId)) return dim
+          const linked = updateHierarchy(d, hierarchyId, (h) => ({
             ...h,
             path: [...h.path, paramId],
           }))
           // the linked-to edge may already exist wholesale on a sibling
           // hierarchy, making this one now fully redundant
-          return pruneRedundantHierarchies(linked, new Set([action.hierarchyId]))
+          return pruneRedundantHierarchies(linked, new Set([hierarchyId]))
         }
         const newParam: Parameter = {
           id: makeId('p'),
@@ -451,7 +479,7 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         }
         return updateHierarchy(
           { ...d, parameters: [...d.parameters, newParam] },
-          action.hierarchyId,
+          hierarchyId,
           (h) => ({ ...h, path: [...h.path, newParam.id] }),
         )
       })

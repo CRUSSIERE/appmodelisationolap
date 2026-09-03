@@ -182,23 +182,40 @@ export function paramHierarchyMenuItems(
     (h) => h.path[h.path.length - 1] === paramId,
   )
   const otherParams = dim.parameters.filter((p) => p.id !== paramId)
-  for (const h of terminalHierarchies) {
-    const suffix = terminalHierarchies.length > 1 ? ` (${h.name})` : ''
+  // a parameter terminating no hierarchy (a fresh dimension's key, or an
+  // attribute one wants to branch off from) still accepts a level: the
+  // reducer creates the hierarchy that will carry it
+  const targets: { id?: string; path: string[]; suffix: string }[] =
+    terminalHierarchies.length > 0
+      ? terminalHierarchies.map((h) => ({
+          id: h.id,
+          path: h.path,
+          suffix: terminalHierarchies.length > 1 ? ` (${h.name})` : '',
+        }))
+      : [{ path: [], suffix: '' }]
+  for (const target of targets) {
     items.push({
-      label: `Ajouter un niveau au-dessus${suffix}`,
-      onClick: () => dispatch({ type: 'ADD_LEVEL_ABOVE', dimId: dim.id, hierarchyId: h.id }),
+      label: `Ajouter un niveau au-dessus${target.suffix}`,
+      onClick: () =>
+        dispatch({
+          type: 'ADD_LEVEL_ABOVE',
+          dimId: dim.id,
+          hierarchyId: target.id,
+          fromParamId: paramId,
+        }),
     })
     const linkable = otherParams.filter(
-      (p) => !h.path.includes(p.id) && !wouldCreateCycle(dim, paramId, p.id),
+      (p) => !target.path.includes(p.id) && !wouldCreateCycle(dim, paramId, p.id),
     )
     for (const p of linkable) {
       items.push({
-        label: `Lier "${p.name}" au-dessus${suffix}`,
+        label: `Lier "${p.name}" au-dessus${target.suffix}`,
         onClick: () =>
           dispatch({
             type: 'ADD_LEVEL_ABOVE',
             dimId: dim.id,
-            hierarchyId: h.id,
+            hierarchyId: target.id,
+            fromParamId: paramId,
             existingParamId: p.id,
           }),
       })

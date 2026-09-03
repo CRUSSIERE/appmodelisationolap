@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "verify:roundtrip": "node --experimental-strip-types scripts/verify-roundtrip.ts"
+    "verify:roundtrip": "node --experimental-strip-types scripts/verify-roundtrip.ts",
+    "verify:hierarchy": "node --experimental-strip-types --import ./scripts/resolve-ts.mjs scripts/verify-hierarchy.ts"
   },
   "dependencies": {
     "react": "^19.2.8",
