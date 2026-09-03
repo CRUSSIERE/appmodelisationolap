@@ -108,3 +108,8 @@ transparence.
 React + Vite + TypeScript + Tailwind CSS v4. Rendu du schéma en SVG écrit à
 la main (aucune librairie de diagramme). Aucun backend : la persistance
 passe uniquement par l'export/import du fichier JSON.
+
+## Licence
+
+[MIT](LICENSE) — libre d'utilisation, de modification et de redistribution,
+y compris commerciale, à condition de conserver la mention de copyright.
