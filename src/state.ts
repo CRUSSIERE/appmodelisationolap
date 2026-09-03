@@ -1,5 +1,13 @@
 import { makeId } from './ids'
-import type { Dimension, Hierarchy, Parameter, Schema } from './types'
+import type {
+  AttributeDataType,
+  Dimension,
+  Fact,
+  Hierarchy,
+  HierarchyLinkType,
+  Parameter,
+  Schema,
+} from './types'
 
 /** dispatch that accepts an optional coalesce key: consecutive dispatches
  * sharing the same key merge into a single undo step (see history.ts) */
@@ -11,8 +19,13 @@ export type Action =
   | { type: 'MOVE_DIMENSION'; dimId: string; x: number; y: number }
   | { type: 'DELETE_DIMENSION'; dimId: string }
   | { type: 'RENAME_DIMENSION'; dimId: string; name: string }
-  | { type: 'MOVE_FACT'; x: number; y: number }
-  | { type: 'RENAME_FACT'; name: string }
+  | { type: 'ADD_FACT'; x: number; y: number }
+  | { type: 'DELETE_FACT'; factId: string }
+  | { type: 'DUPLICATE_FACT'; factId: string }
+  | { type: 'CONNECT_FACT_DIMENSION'; factId: string; dimId: string }
+  | { type: 'DISCONNECT_FACT_DIMENSION'; factId: string; dimId: string }
+  | { type: 'MOVE_FACT'; factId: string; x: number; y: number }
+  | { type: 'RENAME_FACT'; factId: string; name: string }
   | { type: 'MOVE_PARAMETER'; dimId: string; paramId: string; x: number; y: number }
   | {
       type: 'MOVE_WEAK_ATTRIBUTE'
@@ -23,10 +36,13 @@ export type Action =
       y: number
     }
   | { type: 'MOVE_HIERARCHY_CHIP'; dimId: string; hierarchyId: string; x: number; y: number }
-  | { type: 'ADD_MEASURE' }
-  | { type: 'RENAME_MEASURE'; measureId: string; name: string }
-  | { type: 'DELETE_MEASURE'; measureId: string }
+  | { type: 'ADD_MEASURE'; factId: string }
+  | { type: 'RENAME_MEASURE'; factId: string; measureId: string; name: string }
+  | { type: 'DELETE_MEASURE'; factId: string; measureId: string }
+  | { type: 'DUPLICATE_MEASURE'; factId: string; measureId: string }
+  | { type: 'SET_MEASURE_DATA_TYPE'; factId: string; measureId: string; dataType: AttributeDataType }
   | { type: 'RENAME_PARAMETER'; dimId: string; paramId: string; name: string }
+  | { type: 'SET_PARAMETER_DATA_TYPE'; dimId: string; paramId: string; dataType: AttributeDataType }
   | { type: 'ADD_WEAK_ATTRIBUTE'; dimId: string; paramId: string }
   | {
       type: 'RENAME_WEAK_ATTRIBUTE'
@@ -34,6 +50,13 @@ export type Action =
       paramId: string
       weakAttrId: string
       name: string
+    }
+  | {
+      type: 'SET_WEAK_ATTRIBUTE_DATA_TYPE'
+      dimId: string
+      paramId: string
+      weakAttrId: string
+      dataType: AttributeDataType
     }
   | {
       type: 'DELETE_WEAK_ATTRIBUTE'
@@ -48,13 +71,20 @@ export type Action =
   | { type: 'DELETE_HIERARCHY'; dimId: string; hierarchyId: string }
   | { type: 'DUPLICATE_HIERARCHY'; dimId: string; hierarchyId: string }
   | {
+      type: 'SET_HIERARCHY_LINK_TYPE'
+      dimId: string
+      hierarchyIds: string[]
+      from: string
+      to: string
+      linkType: HierarchyLinkType
+    }
+  | {
       type: 'REMOVE_LEVEL_FROM_HIERARCHIES'
       dimId: string
       hierarchyIds: string[]
       paramId: string
     }
   | { type: 'DUPLICATE_DIMENSION'; dimId: string }
-  | { type: 'DUPLICATE_MEASURE'; measureId: string }
   | { type: 'DUPLICATE_PARAMETER'; dimId: string; paramId: string }
   | { type: 'DUPLICATE_WEAK_ATTRIBUTE'; dimId: string; paramId: string; weakAttrId: string }
 
@@ -66,6 +96,13 @@ function updateDim(
   return {
     ...schema,
     dimensions: schema.dimensions.map((d) => (d.id === dimId ? fn(d) : d)),
+  }
+}
+
+function updateFact(schema: Schema, factId: string, fn: (fact: Fact) => Fact): Schema {
+  return {
+    ...schema,
+    facts: schema.facts.map((f) => (f.id === factId ? fn(f) : f)),
   }
 }
 
@@ -103,6 +140,47 @@ function pruneOrphanParameters(dim: Dimension): Dimension {
   }
 }
 
+function hierarchyEdges(h: Hierarchy): string[] {
+  return h.path.slice(0, -1).map((from, i) => `${from}->${h.path[i + 1]}`)
+}
+
+/** drops a hierarchy once every one of its edges is also carried by another
+ * sibling hierarchy — it no longer contributes anything of its own (mirrors
+ * GraphicOLAP's "redundant shared-prefix hierarchy" cleanup on deletion).
+ * Only hierarchies in `touchedIds` (the ones the triggering action actually
+ * modified) are candidates for removal — an untouched hierarchy that already
+ * happened to share every edge with a sibling (e.g. one just cloned via
+ * "Dupliquer") must not be swept away as a side effect of an unrelated edit
+ * elsewhere in the dimension. */
+function pruneRedundantHierarchies(dim: Dimension, touchedIds: Set<string>): Dimension {
+  const kept = dim.hierarchies.filter((h) => {
+    if (!touchedIds.has(h.id)) return true
+    if (h.path.length <= 1) return false
+    const edges = hierarchyEdges(h)
+    return !edges.every((edge) =>
+      dim.hierarchies.some((other) => other.id !== h.id && hierarchyEdges(other).includes(edge)),
+    )
+  })
+  return kept.length === dim.hierarchies.length ? dim : { ...dim, hierarchies: kept }
+}
+
+/** removes every occurrence of `paramId` from a hierarchy's path (wherever it
+ * sits, not just at the terminal), dropping any per-edge link type that
+ * referenced it */
+function removeParamFromHierarchyPath(h: Hierarchy, paramId: string): Hierarchy {
+  if (!h.path.includes(paramId)) return h
+  const path = h.path.filter((id) => id !== paramId)
+  const linkTypes = h.linkTypes
+    ? Object.fromEntries(
+        Object.entries(h.linkTypes).filter(([edge]) => {
+          const [from, to] = edge.split('->')
+          return from !== paramId && to !== paramId
+        }),
+      )
+    : undefined
+  return { ...h, path, linkTypes }
+}
+
 export function schemaReducer(schema: Schema, action: Action): Schema {
   switch (action.type) {
     case 'IMPORT_SCHEMA':
@@ -118,7 +196,14 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         parameters: [{ id: keyId, name: 'cle', weakAttributes: [] }],
         hierarchies: [],
       }
-      return { ...schema, dimensions: [...schema.dimensions, dim] }
+      // a schema with a single fact keeps behaving like a plain star: new
+      // dimensions auto-connect. With several facts (constellation), the
+      // user picks connections explicitly via the dimension's context menu.
+      const facts =
+        schema.facts.length === 1
+          ? [{ ...schema.facts[0], dimensionIds: [...schema.facts[0].dimensionIds, dim.id] }]
+          : schema.facts
+      return { ...schema, dimensions: [...schema.dimensions, dim], facts }
     }
 
     case 'MOVE_DIMENSION':
@@ -131,6 +216,10 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
       return {
         ...schema,
         dimensions: schema.dimensions.filter((d) => d.id !== action.dimId),
+        facts: schema.facts.map((f) => ({
+          ...f,
+          dimensionIds: f.dimensionIds.filter((id) => id !== action.dimId),
+        })),
       }
 
     case 'RENAME_DIMENSION':
@@ -139,52 +228,102 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         name: action.name,
       }))
 
-    case 'MOVE_FACT':
-      return {
-        ...schema,
-        fact: { ...schema.fact, position: { x: action.x, y: action.y } },
+    case 'ADD_FACT': {
+      const fact: Fact = {
+        id: makeId('fact'),
+        name: 'NOUVEAU_FAIT',
+        position: { x: action.x, y: action.y },
+        measures: [],
+        dimensionIds: [],
       }
+      return { ...schema, facts: [...schema.facts, fact] }
+    }
+
+    case 'DELETE_FACT':
+      return { ...schema, facts: schema.facts.filter((f) => f.id !== action.factId) }
+
+    case 'DUPLICATE_FACT': {
+      const source = schema.facts.find((f) => f.id === action.factId)
+      if (!source) return schema
+      const copy: Fact = {
+        ...source,
+        id: makeId('fact'),
+        name: `${source.name}_copie`,
+        position: { x: source.position.x + 40, y: source.position.y + 40 },
+        measures: source.measures.map((m) => ({ ...m, id: makeId('m') })),
+        dimensionIds: [...source.dimensionIds],
+      }
+      return { ...schema, facts: [...schema.facts, copy] }
+    }
+
+    case 'CONNECT_FACT_DIMENSION':
+      return updateFact(schema, action.factId, (f) =>
+        f.dimensionIds.includes(action.dimId)
+          ? f
+          : { ...f, dimensionIds: [...f.dimensionIds, action.dimId] },
+      )
+
+    case 'DISCONNECT_FACT_DIMENSION':
+      return updateFact(schema, action.factId, (f) => ({
+        ...f,
+        dimensionIds: f.dimensionIds.filter((id) => id !== action.dimId),
+      }))
+
+    case 'MOVE_FACT':
+      return updateFact(schema, action.factId, (f) => ({
+        ...f,
+        position: { x: action.x, y: action.y },
+      }))
 
     case 'RENAME_FACT':
-      return { ...schema, fact: { ...schema.fact, name: action.name } }
+      return updateFact(schema, action.factId, (f) => ({ ...f, name: action.name }))
 
     case 'ADD_MEASURE':
-      return {
-        ...schema,
-        fact: {
-          ...schema.fact,
-          measures: [
-            ...schema.fact.measures,
-            { id: makeId('m'), name: 'nouvelle_mesure' },
-          ],
-        },
-      }
+      return updateFact(schema, action.factId, (f) => ({
+        ...f,
+        measures: [...f.measures, { id: makeId('m'), name: 'nouvelle_mesure' }],
+      }))
 
     case 'RENAME_MEASURE':
-      return {
-        ...schema,
-        fact: {
-          ...schema.fact,
-          measures: schema.fact.measures.map((m) =>
-            m.id === action.measureId ? { ...m, name: action.name } : m,
-          ),
-        },
-      }
+      return updateFact(schema, action.factId, (f) => ({
+        ...f,
+        measures: f.measures.map((m) =>
+          m.id === action.measureId ? { ...m, name: action.name } : m,
+        ),
+      }))
 
     case 'DELETE_MEASURE':
-      return {
-        ...schema,
-        fact: {
-          ...schema.fact,
-          measures: schema.fact.measures.filter(
-            (m) => m.id !== action.measureId,
-          ),
-        },
-      }
+      return updateFact(schema, action.factId, (f) => ({
+        ...f,
+        measures: f.measures.filter((m) => m.id !== action.measureId),
+      }))
+
+    case 'DUPLICATE_MEASURE':
+      return updateFact(schema, action.factId, (f) => {
+        const source = f.measures.find((m) => m.id === action.measureId)
+        if (!source) return f
+        return {
+          ...f,
+          measures: [...f.measures, { ...source, id: makeId('m'), name: `${source.name}_copie` }],
+        }
+      })
+
+    case 'SET_MEASURE_DATA_TYPE':
+      return updateFact(schema, action.factId, (f) => ({
+        ...f,
+        measures: f.measures.map((m) =>
+          m.id === action.measureId ? { ...m, dataType: action.dataType } : m,
+        ),
+      }))
 
     case 'RENAME_PARAMETER':
       return updateDim(schema, action.dimId, (d) =>
         updateParam(d, action.paramId, (p) => ({ ...p, name: action.name })),
+      )
+
+    case 'SET_PARAMETER_DATA_TYPE':
+      return updateDim(schema, action.dimId, (d) =>
+        updateParam(d, action.paramId, (p) => ({ ...p, dataType: action.dataType })),
       )
 
     case 'MOVE_PARAMETER':
@@ -212,6 +351,16 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
           ...p,
           weakAttributes: p.weakAttributes.map((wa) =>
             wa.id === action.weakAttrId ? { ...wa, name: action.name } : wa,
+          ),
+        })),
+      )
+
+    case 'SET_WEAK_ATTRIBUTE_DATA_TYPE':
+      return updateDim(schema, action.dimId, (d) =>
+        updateParam(d, action.paramId, (p) => ({
+          ...p,
+          weakAttributes: p.weakAttributes.map((wa) =>
+            wa.id === action.weakAttrId ? { ...wa, dataType: action.dataType } : wa,
           ),
         })),
       )
@@ -254,29 +403,36 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
 
     case 'DELETE_PARAMETER':
       return updateDim(schema, action.dimId, (d) => {
-        if (action.paramId === d.keyParameterId) return d
+        // the root/key parameter is only removable once it's the last
+        // parameter standing — GraphicOLAP forbids it while siblings exist
+        const isLastParam = d.parameters.length === 1 && d.parameters[0].id === action.paramId
+        if (action.paramId === d.keyParameterId && !isLastParam) return d
+        if (isLastParam) {
+          // no parameter left to anchor any hierarchy on
+          return { ...d, parameters: [], hierarchies: [] }
+        }
+        const touchedIds = new Set(
+          d.hierarchies.filter((h) => h.path.includes(action.paramId)).map((h) => h.id),
+        )
         const trimmed = {
           ...d,
-          // only trim a hierarchy where the deleted param is its terminal
-          // node — it may also appear mid-path in another hierarchy that
-          // shares this trunk, and that one must stay intact
-          hierarchies: d.hierarchies.map((h) =>
-            h.path[h.path.length - 1] === action.paramId
-              ? { ...h, path: h.path.slice(0, -1) }
-              : h,
-          ),
+          hierarchies: d.hierarchies.map((h) => removeParamFromHierarchyPath(h, action.paramId)),
         }
-        return pruneOrphanParameters(trimmed)
+        return pruneOrphanParameters(pruneRedundantHierarchies(trimmed, touchedIds))
       })
 
     case 'ADD_HIERARCHY':
-      return updateDim(schema, action.dimId, (d) => ({
-        ...d,
-        hierarchies: [
-          ...d.hierarchies,
-          { id: makeId('h'), name: 'NOUVELLE_HIERARCHIE', path: [d.keyParameterId] },
-        ],
-      }))
+      return updateDim(schema, action.dimId, (d) => {
+        // GraphicOLAP: "Hierarchies requires at least 2 parameters"
+        if (d.parameters.length < 2) return d
+        return {
+          ...d,
+          hierarchies: [
+            ...d.hierarchies,
+            { id: makeId('h'), name: 'NOUVELLE_HIERARCHIE', path: [d.keyParameterId] },
+          ],
+        }
+      })
 
     case 'RENAME_HIERARCHY':
       return updateDim(schema, action.dimId, (d) =>
@@ -285,6 +441,22 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
           name: action.name,
         })),
       )
+
+    case 'SET_HIERARCHY_LINK_TYPE': {
+      const targetIds = new Set(action.hierarchyIds)
+      return updateDim(schema, action.dimId, (d) => ({
+        ...d,
+        hierarchies: d.hierarchies.map((h) => {
+          if (!targetIds.has(h.id)) return h
+          const edgeExists = h.path.some((p, i) => p === action.from && h.path[i + 1] === action.to)
+          if (!edgeExists) return h
+          return {
+            ...h,
+            linkTypes: { ...h.linkTypes, [`${action.from}->${action.to}`]: action.linkType },
+          }
+        }),
+      }))
+    }
 
     case 'MOVE_HIERARCHY_CHIP':
       return updateDim(schema, action.dimId, (d) =>
@@ -312,6 +484,7 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
           id: makeId('h'),
           name: `${source.name}_copie`,
           path: [...source.path],
+          linkTypes: source.linkTypes ? { ...source.linkTypes } : undefined,
         }
         return { ...d, hierarchies: [...d.hierarchies, copy] }
       })
@@ -331,6 +504,14 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         ...h,
         id: makeId('h'),
         path: h.path.map((pid) => paramIdMap.get(pid)!),
+        linkTypes: h.linkTypes
+          ? Object.fromEntries(
+              Object.entries(h.linkTypes).map(([edge, type]) => {
+                const [from, to] = edge.split('->')
+                return [`${paramIdMap.get(from)}->${paramIdMap.get(to)}`, type]
+              }),
+            )
+          : undefined,
       }))
       const copy: Dimension = {
         ...source,
@@ -341,16 +522,14 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         parameters,
         hierarchies,
       }
-      return { ...schema, dimensions: [...schema.dimensions, copy] }
-    }
-
-    case 'DUPLICATE_MEASURE': {
-      const source = schema.fact.measures.find((m) => m.id === action.measureId)
-      if (!source) return schema
-      const copy = { id: makeId('m'), name: `${source.name}_copie` }
       return {
         ...schema,
-        fact: { ...schema.fact, measures: [...schema.fact.measures, copy] },
+        dimensions: [...schema.dimensions, copy],
+        facts: schema.facts.map((f) =>
+          f.dimensionIds.includes(source.id)
+            ? { ...f, dimensionIds: [...f.dimensionIds, copy.id] }
+            : f,
+        ),
       }
     }
 
@@ -380,14 +559,17 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
     case 'REMOVE_LEVEL_FROM_HIERARCHIES': {
       const targetIds = new Set(action.hierarchyIds)
       return updateDim(schema, action.dimId, (d) =>
-        pruneOrphanParameters({
-          ...d,
-          hierarchies: d.hierarchies.map((h) =>
-            targetIds.has(h.id)
-              ? { ...h, path: h.path.filter((id) => id !== action.paramId) }
-              : h,
+        pruneOrphanParameters(
+          pruneRedundantHierarchies(
+            {
+              ...d,
+              hierarchies: d.hierarchies.map((h) =>
+                targetIds.has(h.id) ? removeParamFromHierarchyPath(h, action.paramId) : h,
+              ),
+            },
+            targetIds,
           ),
-        }),
+        ),
       )
     }
 

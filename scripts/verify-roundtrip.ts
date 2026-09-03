@@ -17,8 +17,10 @@ for (const dim of sampleSchema.dimensions) {
 
 const ids = new Set<string>()
 function collectIds(schema: typeof sampleSchema) {
-  ids.add(schema.fact.id)
-  for (const m of schema.fact.measures) ids.add(m.id)
+  for (const fact of schema.facts) {
+    ids.add(fact.id)
+    for (const m of fact.measures) ids.add(m.id)
+  }
   for (const dim of schema.dimensions) {
     ids.add(dim.id)
     for (const p of dim.parameters) {

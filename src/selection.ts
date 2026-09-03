@@ -1,14 +1,14 @@
 import type { SchemaDispatch } from './state'
 import type { Dimension, Schema } from './types'
 
-export const FACT_KEY = 'fact'
+export const factKey = (factId: string) => `fact:${factId}`
 export const dimKey = (dimId: string) => `dim:${dimId}`
 export const paramKey = (dimId: string, paramId: string) => `param:${dimId}:${paramId}`
 export const weakAttrKey = (dimId: string, paramId: string, waId: string) =>
   `wa:${dimId}:${paramId}:${waId}`
 export const hierarchyKey = (dimId: string, hierarchyId: string) => `hier:${dimId}:${hierarchyId}`
 export const edgeKey = (dimId: string, from: string, to: string) => `edge:${dimId}:${from}:${to}`
-export const measureKey = (measureId: string) => `measure:${measureId}`
+export const measureKey = (factId: string, measureId: string) => `measure:${factId}:${measureId}`
 
 export function selectOnly(key: string): Set<string> {
   return new Set([key])
@@ -27,15 +27,19 @@ function hierarchiesOnEdge(dim: Dimension, from: string, to: string) {
 
 /** deletes every selected element, adapting the action to what was
  * selected: a trait removes that level from the hierarchies drawing it, a
- * hierarchy chip removes the whole hierarchy, a dimension removes itself
- * (and, implicitly, everything it contains). */
+ * hierarchy chip removes the whole hierarchy, a dimension/fact removes
+ * itself (and, implicitly, everything it contains). */
 export function deleteSelection(schema: Schema, selection: Set<string>, dispatch: SchemaDispatch) {
   const dimIds: string[] = []
+  const factIds: string[] = []
   for (const key of selection) {
     const [kind, ...rest] = key.split(':')
     switch (kind) {
       case 'dim':
         dimIds.push(rest[0])
+        break
+      case 'fact':
+        factIds.push(rest[0])
         break
       case 'param':
         dispatch({ type: 'DELETE_PARAMETER', dimId: rest[0], paramId: rest[1] })
@@ -62,16 +66,19 @@ export function deleteSelection(schema: Schema, selection: Set<string>, dispatch
         break
       }
       case 'measure':
-        dispatch({ type: 'DELETE_MEASURE', measureId: rest[0] })
+        dispatch({ type: 'DELETE_MEASURE', factId: rest[0], measureId: rest[1] })
         break
       default:
-        break // 'fact' isn't deletable
+        break
     }
   }
-  // dimensions last: deleting one makes any DELETE_PARAMETER/etc. dispatched
-  // above for its own contents a harmless no-op instead of an error
+  // dimensions/facts last: deleting one makes any DELETE_PARAMETER/etc.
+  // dispatched above for its own contents a harmless no-op instead of an error
   for (const dimId of dimIds) {
     dispatch({ type: 'DELETE_DIMENSION', dimId })
+  }
+  for (const factId of factIds) {
+    dispatch({ type: 'DELETE_FACT', factId })
   }
 }
 

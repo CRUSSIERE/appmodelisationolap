@@ -1,6 +1,13 @@
 import type { MenuItem } from './components/ContextMenu'
 import type { SchemaDispatch } from './state'
-import type { Dimension, Hierarchy, NamedItem, Parameter, WeakAttribute } from './types'
+import type { Dimension, Fact, Hierarchy, HierarchyLinkType, Measure, Parameter, Schema, WeakAttribute } from './types'
+
+const LINK_TYPE_LABELS: Record<HierarchyLinkType, string> = {
+  strict: 'Stricte (1,n → 1,1)',
+  non_strict: 'Non stricte (1,n → 1,n)',
+  strict_incomplete: 'Stricte incomplète (0,n → 0,1)',
+  non_strict_incomplete: 'Non stricte incomplète (0,n → 0,n)',
+}
 
 function copyItem(name: string): MenuItem {
   return {
@@ -16,6 +23,7 @@ function renameItem(onRename?: () => void): MenuItem[] {
 }
 
 export function dimensionMenuItems(
+  schema: Schema,
   dim: Dimension,
   dispatch: SchemaDispatch,
   onRename?: () => void,
@@ -24,6 +32,7 @@ export function dimensionMenuItems(
     ...renameItem(onRename),
     { label: 'Dupliquer', onClick: () => dispatch({ type: 'DUPLICATE_DIMENSION', dimId: dim.id }) },
     copyItem(dim.name),
+    ...factConnectionMenuItems(schema, dim, dispatch),
     {
       label: 'Supprimer',
       danger: true,
@@ -36,12 +45,30 @@ export function dimensionMenuItems(
   ]
 }
 
-export function factMenuItems(fact: NamedItem, onRename?: () => void): MenuItem[] {
-  return [...renameItem(onRename), copyItem(fact.name)]
+export function factMenuItems(
+  fact: Fact,
+  dispatch: SchemaDispatch,
+  onRename?: () => void,
+): MenuItem[] {
+  return [
+    ...renameItem(onRename),
+    { label: 'Dupliquer', onClick: () => dispatch({ type: 'DUPLICATE_FACT', factId: fact.id }) },
+    copyItem(fact.name),
+    {
+      label: 'Supprimer',
+      danger: true,
+      onClick: () => {
+        if (window.confirm(`Supprimer le fait ${fact.name} ?`)) {
+          dispatch({ type: 'DELETE_FACT', factId: fact.id })
+        }
+      },
+    },
+  ]
 }
 
 export function measureMenuItems(
-  measure: NamedItem,
+  factId: string,
+  measure: Measure,
   dispatch: SchemaDispatch,
   onRename?: () => void,
 ): MenuItem[] {
@@ -49,15 +76,53 @@ export function measureMenuItems(
     ...renameItem(onRename),
     {
       label: 'Dupliquer',
-      onClick: () => dispatch({ type: 'DUPLICATE_MEASURE', measureId: measure.id }),
+      onClick: () => dispatch({ type: 'DUPLICATE_MEASURE', factId, measureId: measure.id }),
     },
     copyItem(measure.name),
     {
       label: 'Supprimer',
       danger: true,
-      onClick: () => dispatch({ type: 'DELETE_MEASURE', measureId: measure.id }),
+      onClick: () => dispatch({ type: 'DELETE_MEASURE', factId, measureId: measure.id }),
     },
   ]
+}
+
+/** connect/disconnect items shown on a dimension's menu once the schema has
+ * more than one fact (a single-fact schema stays a plain always-connected
+ * star, matching prior behavior) */
+export function factConnectionMenuItems(
+  schema: Schema,
+  dim: Dimension,
+  dispatch: SchemaDispatch,
+): MenuItem[] {
+  if (schema.facts.length <= 1) return []
+  return schema.facts.map((fact) => {
+    const connected = fact.dimensionIds.includes(dim.id)
+    return {
+      label: connected ? `Déconnecter de ${fact.name}` : `Connecter à ${fact.name}`,
+      onClick: () =>
+        dispatch({
+          type: connected ? 'DISCONNECT_FACT_DIMENSION' : 'CONNECT_FACT_DIMENSION',
+          factId: fact.id,
+          dimId: dim.id,
+        }),
+    }
+  })
+}
+
+/** cardinality/completeness submenu for a hierarchy edge (one item per
+ * GraphicOLAP link type), applied to every hierarchy sharing that edge */
+export function hierarchyLinkTypeMenuItems(
+  dimId: string,
+  hierarchyIds: string[],
+  from: string,
+  to: string,
+  dispatch: SchemaDispatch,
+): MenuItem[] {
+  return (Object.keys(LINK_TYPE_LABELS) as HierarchyLinkType[]).map((linkType) => ({
+    label: LINK_TYPE_LABELS[linkType],
+    onClick: () => dispatch({ type: 'SET_HIERARCHY_LINK_TYPE', dimId, hierarchyIds, from, to, linkType }),
+  }))
 }
 
 export function paramBaseMenuItems(

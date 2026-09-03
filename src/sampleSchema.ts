@@ -1,13 +1,16 @@
 import type { Schema } from './types'
 
 export const sampleSchema: Schema = {
-  version: 1,
-  fact: {
-    id: 'fact-ventes',
-    name: 'VENTES',
-    position: { x: 480, y: 500 },
-    measures: [{ id: 'm-montant', name: 'montant' }],
-  },
+  version: 2,
+  facts: [
+    {
+      id: 'fact-ventes',
+      name: 'VENTES',
+      position: { x: 480, y: 500 },
+      measures: [{ id: 'm-montant', name: 'montant' }],
+      dimensionIds: ['dim-produits', 'dim-temps', 'dim-clients'],
+    },
+  ],
   dimensions: [
     {
       id: 'dim-produits',

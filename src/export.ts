@@ -13,7 +13,7 @@ export function exportJson(schema: Schema) {
   const blob = new Blob([JSON.stringify(schema, null, 2)], {
     type: 'application/json',
   })
-  download(blob, `${schema.fact.name || 'schema'}.json`)
+  download(blob, `${schema.facts[0]?.name || 'schema'}.json`)
 }
 
 function isNamedItem(v: unknown): v is { id: string; name: string } {
@@ -44,16 +44,25 @@ function assertValidSchema(data: unknown): asserts data is Schema {
   if (!data || typeof data !== 'object') fail('le contenu n’est pas un objet')
   const s = data as Record<string, unknown>
 
-  if (!isNamedItem(s.fact)) fail('"fact" est manquant ou invalide')
-  const fact = s.fact as Record<string, unknown>
-  if (!Array.isArray(fact.measures) || !fact.measures.every(isNamedItem)) {
-    fail('"fact.measures" doit être un tableau de {id, name}')
-  }
-  // position is optional here (older exports predate it) — normalizeSchema
-  // backfills a default, but if present it must be well-formed
-  if (fact.position !== undefined && !isPoint(fact.position)) {
-    fail('"fact.position" doit être {x, y}')
-  }
+  if (!Array.isArray(s.facts)) fail('"facts" doit être un tableau')
+  ;(s.facts as unknown[]).forEach((fact, i) => {
+    if (!isNamedItem(fact)) fail(`facts[${i}] est invalide`)
+    const f = fact as Record<string, unknown>
+    if (!Array.isArray(f.measures) || !f.measures.every(isNamedItem)) {
+      fail(`facts[${i}].measures doit être un tableau de {id, name}`)
+    }
+    // position is optional here (older exports predate it) — normalizeSchema
+    // backfills a default, but if present it must be well-formed
+    if (f.position !== undefined && !isPoint(f.position)) {
+      fail(`facts[${i}].position doit être {x, y}`)
+    }
+    if (
+      f.dimensionIds !== undefined &&
+      (!Array.isArray(f.dimensionIds) || !f.dimensionIds.every((id) => typeof id === 'string'))
+    ) {
+      fail(`facts[${i}].dimensionIds doit être un tableau d’ids`)
+    }
+  })
 
   if (!Array.isArray(s.dimensions)) fail('"dimensions" doit être un tableau')
   ;(s.dimensions as unknown[]).forEach((dim, i) => {
@@ -90,17 +99,38 @@ function assertValidSchema(data: unknown): asserts data is Schema {
 
 export function parseImportedJson(text: string): Schema {
   const data = JSON.parse(text)
-  assertValidSchema(data)
-  return normalizeSchema(data)
+  const migrated = migrateLegacySingleFact(data)
+  assertValidSchema(migrated)
+  return normalizeSchema(migrated)
+}
+
+/** v1 exports had a single `fact` object; wrap it into `facts: [fact]`,
+ * connected to every dimension (that was the only topology v1 supported) */
+function migrateLegacySingleFact(data: unknown): unknown {
+  if (!data || typeof data !== 'object') return data
+  const s = data as Record<string, unknown>
+  if (s.facts !== undefined || !isNamedItem(s.fact)) return data
+  const dimensions = Array.isArray(s.dimensions) ? (s.dimensions as { id?: unknown }[]) : []
+  const dimensionIds = dimensions
+    .map((d) => d.id)
+    .filter((id): id is string => typeof id === 'string')
+  const { fact, ...rest } = s
+  return { ...rest, facts: [{ ...(fact as object), dimensionIds }] }
 }
 
 /** backfills fields added after older exports were written, so old files keep loading */
 function normalizeSchema(schema: Schema): Schema {
-  if (schema.fact.position) return schema
   const xs = schema.dimensions.map((d) => d.position.x)
   const x = xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 400
   const y = Math.max(500, ...schema.dimensions.map((d) => d.position.y + 300))
-  return { ...schema, fact: { ...schema.fact, position: { x, y } } }
+  return {
+    ...schema,
+    facts: schema.facts.map((f) => ({
+      ...f,
+      position: f.position ?? { x, y },
+      dimensionIds: f.dimensionIds ?? [],
+    })),
+  }
 }
 
 type RasterFormat = 'png' | 'jpeg'

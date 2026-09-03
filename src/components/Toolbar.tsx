@@ -55,6 +55,9 @@ export function Toolbar({
         <ToolbarButton onClick={() => dispatch({ type: 'ADD_DIMENSION', x: 120, y: 120 })}>
           + Dimension
         </ToolbarButton>
+        <ToolbarButton onClick={() => dispatch({ type: 'ADD_FACT', x: 480, y: 500 })}>
+          + Fait
+        </ToolbarButton>
       </ToolbarGroup>
 
       <ToolbarGroup>
