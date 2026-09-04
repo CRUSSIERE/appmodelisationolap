@@ -235,27 +235,32 @@ export async function exportRaster(
   const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' })
   const svgUrl = URL.createObjectURL(svgBlob)
 
-  const img = new Image()
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve()
-    img.onerror = () => reject(new Error('Échec du rendu SVG'))
-    img.src = svgUrl
-  })
-
   const canvas = document.createElement('canvas')
-  canvas.width = width * scale
-  canvas.height = height * scale
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('Canvas 2D non disponible')
-  ctx.scale(scale, scale)
-  // JPEG has no alpha channel — paint the ground on the canvas rather than
-  // injecting a rect, which would have to track the cropped viewBox origin
-  if (format === 'jpeg') {
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, width, height)
+  // finally, not a trailing revoke: a failed render or a missing 2D context
+  // would otherwise leak the blob URL for the lifetime of the document
+  try {
+    const img = new Image()
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve()
+      img.onerror = () => reject(new Error('Échec du rendu SVG'))
+      img.src = svgUrl
+    })
+
+    canvas.width = width * scale
+    canvas.height = height * scale
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Canvas 2D non disponible')
+    ctx.scale(scale, scale)
+    // JPEG has no alpha channel — paint the ground on the canvas rather than
+    // injecting a rect, which would have to track the cropped viewBox origin
+    if (format === 'jpeg') {
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, width, height)
+    }
+    ctx.drawImage(img, 0, 0, width, height)
+  } finally {
+    URL.revokeObjectURL(svgUrl)
   }
-  ctx.drawImage(img, 0, 0, width, height)
-  URL.revokeObjectURL(svgUrl)
 
   const mime = format === 'png' ? 'image/png' : 'image/jpeg'
   const blob: Blob | null = await new Promise((resolve) =>

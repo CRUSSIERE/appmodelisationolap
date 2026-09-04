@@ -1,6 +1,9 @@
 import type { SchemaDispatch } from './state'
 import type { Dimension, Schema } from './types'
 
+/** what marks a selected element wherever the diagram draws one */
+export const SELECTED_COLOR = '#2563eb'
+
 export const factKey = (factId: string) => `fact:${factId}`
 export const dimKey = (dimId: string) => `dim:${dimId}`
 export const paramKey = (dimId: string, paramId: string) => `param:${dimId}:${paramId}`
