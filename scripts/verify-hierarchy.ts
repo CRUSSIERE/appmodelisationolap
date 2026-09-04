@@ -69,4 +69,37 @@ const orphanHierarchy = grown.dimensions[0].hierarchies.at(-1)!
 assert.equal(orphanHierarchy.path[1], orphan.id, 'the orphan sits on the new path')
 assert.equal(orphanHierarchy.path.length, 3, 'and the new level lands above it')
 
+// an alternate hierarchy comes with its first level already attached: a
+// one-parameter path would draw neither edge nor name-chip
+const alternate = schemaReducer(withSecond, { type: 'ADD_HIERARCHY', dimId: extended.id })
+const withAlt = alternate.dimensions[0]
+assert.equal(withAlt.hierarchies.length, 2, 'ADD_HIERARCHY adds the hierarchy')
+assert.equal(withAlt.parameters.length, extended.parameters.length + 1, 'and a level to carry')
+assert.deepStrictEqual(
+  withAlt.hierarchies[1].path.slice(0, 1),
+  [withAlt.keyParameterId],
+  'the alternate starts at the key',
+)
+assert.equal(withAlt.hierarchies[1].path.length, 2, 'and spans key -> new level')
+
+// branching from a mid-level parameter keeps the prefix and still gets a level
+const fromMid = schemaReducer(withSecond, {
+  type: 'ADD_HIERARCHY',
+  dimId: extended.id,
+  fromParamId: mid,
+}).dimensions[0]
+assert.deepStrictEqual(
+  fromMid.hierarchies[1].path.slice(0, 2),
+  [fromMid.keyParameterId, mid],
+  'the branch reuses the prefix up to its source',
+)
+assert.equal(fromMid.hierarchies[1].path.length, 3, 'and ends on a fresh level')
+
+// GraphicOLAP forbids a hierarchy on a dimension with a single parameter
+assert.deepStrictEqual(
+  schemaReducer(created, { type: 'ADD_HIERARCHY', dimId: fresh.id }),
+  created,
+  'a one-parameter dimension refuses the hierarchy outright',
+)
+
 console.log('OK — a fresh dimension can grow levels, extend and branch its hierarchies')

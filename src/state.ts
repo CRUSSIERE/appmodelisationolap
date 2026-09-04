@@ -509,19 +509,18 @@ export function schemaReducer(schema: Schema, action: Action): Schema {
         return pruneOrphanParameters(pruneRedundantHierarchies(trimmed, touchedIds))
       })
 
-    case 'ADD_HIERARCHY':
-      return updateDim(schema, action.dimId, (d) => {
-        // GraphicOLAP: "Hierarchies requires at least 2 parameters"
-        if (d.parameters.length < 2) return d
-        const path = action.fromParamId ? findPrefixToParam(d, action.fromParamId) : [d.keyParameterId]
-        return {
-          ...d,
-          hierarchies: [
-            ...d.hierarchies,
-            { id: makeId('h'), name: 'NOUVELLE_HIERARCHIE', path },
-          ],
-        }
+    case 'ADD_HIERARCHY': {
+      // GraphicOLAP: "Hierarchies requires at least 2 parameters"
+      const dim = schema.dimensions.find((d) => d.id === action.dimId)
+      if (!dim || dim.parameters.length < 2) return schema
+      // a hierarchy holding a single parameter draws nothing (see pickChipEdge
+      // in layout.ts), so seed the level that makes it visible along with it
+      return schemaReducer(schema, {
+        type: 'ADD_LEVEL_ABOVE',
+        dimId: action.dimId,
+        fromParamId: action.fromParamId,
       })
+    }
 
     case 'RENAME_HIERARCHY':
       return updateDim(schema, action.dimId, (d) =>
