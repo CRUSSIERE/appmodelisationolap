@@ -171,28 +171,65 @@ function normalizeSchema(schema: Schema): Schema {
 
 type RasterFormat = 'png' | 'jpeg'
 
+/** breathing room kept around the diagram in an exported image */
+const EXPORT_BORDER = 24
+
+/**
+ * Shrinks the SVG viewport onto the diagram's real bounding box plus a small
+ * border, so an export carries no empty canvas around the schema.
+ *
+ * Measures the single `data-export="content"` group: one getBBox on a
+ * transform-less group already unions its children in the root's user space,
+ * transforms included — which per-child getBBox calls would not, since those
+ * report local coordinates. The background rect and the marquee sit outside
+ * that group precisely so they do not inflate the box.
+ */
+export function applyCrop(svg: SVGSVGElement, border = EXPORT_BORDER) {
+  const content = svg.querySelector<SVGGraphicsElement>('[data-export="content"]')
+  if (!content) return
+  const box = content.getBBox()
+  // an empty schema has nothing to frame — leave the default viewport alone
+  // rather than produce a zero-sized image
+  if (box.width === 0 || box.height === 0) return
+
+  const x = box.x - border
+  const y = box.y - border
+  const width = box.width + border * 2
+  const height = box.height + border * 2
+  svg.setAttribute('viewBox', `${x} ${y} ${width} ${height}`)
+  svg.setAttribute('width', String(width))
+  svg.setAttribute('height', String(height))
+
+  // the background is what gives PNG/JPEG their opaque ground; it has to
+  // follow the new frame or the crop would expose transparent margins
+  const bg = svg.querySelector('[data-export="background"]')
+  if (bg) {
+    bg.setAttribute('x', String(x))
+    bg.setAttribute('y', String(y))
+    bg.setAttribute('width', String(width))
+    bg.setAttribute('height', String(height))
+  }
+}
+
+/** copy of the diagram sized in px, with the editor-only affordances removed */
+function exportClone(svg: SVGSVGElement) {
+  const width = svg.viewBox.baseVal.width || svg.clientWidth
+  const height = svg.viewBox.baseVal.height || svg.clientHeight
+  const clone = svg.cloneNode(true) as SVGSVGElement
+  clone.setAttribute('width', String(width))
+  clone.setAttribute('height', String(height))
+  clone.querySelectorAll('[data-export="chrome"]').forEach((el) => el.remove())
+  return { clone, width, height }
+}
+
 /** Serializes an <svg> element and rasterizes it onto a canvas at the given scale. */
 export async function exportRaster(
   svg: SVGSVGElement,
   format: RasterFormat,
+  filename = 'schema',
   scale = 2,
 ) {
-  const width = svg.viewBox.baseVal.width || svg.clientWidth
-  const height = svg.viewBox.baseVal.height || svg.clientHeight
-
-  const clone = svg.cloneNode(true) as SVGSVGElement
-  clone.setAttribute('width', String(width))
-  clone.setAttribute('height', String(height))
-  if (format === 'jpeg') {
-    // JPEG has no alpha channel — paint a white background first.
-    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
-    bg.setAttribute('x', '0')
-    bg.setAttribute('y', '0')
-    bg.setAttribute('width', String(width))
-    bg.setAttribute('height', String(height))
-    bg.setAttribute('fill', '#ffffff')
-    clone.insertBefore(bg, clone.firstChild)
-  }
+  const { clone, width, height } = exportClone(svg)
 
   const svgText = new XMLSerializer().serializeToString(clone)
   const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' })
@@ -211,6 +248,12 @@ export async function exportRaster(
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Canvas 2D non disponible')
   ctx.scale(scale, scale)
+  // JPEG has no alpha channel — paint the ground on the canvas rather than
+  // injecting a rect, which would have to track the cropped viewBox origin
+  if (format === 'jpeg') {
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, width, height)
+  }
   ctx.drawImage(img, 0, 0, width, height)
   URL.revokeObjectURL(svgUrl)
 
@@ -219,16 +262,12 @@ export async function exportRaster(
     canvas.toBlob(resolve, mime, 0.95),
   )
   if (!blob) throw new Error('Échec de génération de l’image')
-  download(blob, `schema.${format === 'jpeg' ? 'jpg' : 'png'}`)
+  download(blob, `${filename}.${format === 'jpeg' ? 'jpg' : 'png'}`)
 }
 
-export function exportSvg(svg: SVGSVGElement) {
-  const width = svg.viewBox.baseVal.width || svg.clientWidth
-  const height = svg.viewBox.baseVal.height || svg.clientHeight
-  const clone = svg.cloneNode(true) as SVGSVGElement
-  clone.setAttribute('width', String(width))
-  clone.setAttribute('height', String(height))
+export function exportSvg(svg: SVGSVGElement, filename = 'schema') {
+  const { clone } = exportClone(svg)
   const svgText = new XMLSerializer().serializeToString(clone)
   const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' })
-  download(blob, 'schema.svg')
+  download(blob, `${filename}.svg`)
 }

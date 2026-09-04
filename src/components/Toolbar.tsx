@@ -1,11 +1,12 @@
-import { exportJson, exportRaster, exportSvg, parseImportedJson } from '../export'
+import { useState } from 'react'
+import { exportJson, parseImportedJson } from '../export'
 import type { SchemaDispatch } from '../state'
 import type { Schema } from '../types'
+import { ExportDialog } from './ExportDialog'
 
 export function Toolbar({
   schema,
   dispatch,
-  svgRef,
   undo,
   redo,
   canUndo,
@@ -13,12 +14,13 @@ export function Toolbar({
 }: {
   schema: Schema
   dispatch: SchemaDispatch
-  svgRef: React.RefObject<SVGSVGElement | null>
   undo: () => void
   redo: () => void
   canUndo: boolean
   canRedo: boolean
 }) {
+  const [exportOpen, setExportOpen] = useState(false)
+
   function onImportChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     e.target.value = ''
@@ -31,18 +33,6 @@ export function Toolbar({
         window.alert(err instanceof Error ? err.message : 'Import invalide')
       }
     })
-  }
-
-  function onExportImage(format: 'svg' | 'png' | 'jpeg') {
-    const svg = svgRef.current
-    if (!svg) return
-    if (format === 'svg') {
-      exportSvg(svg)
-    } else {
-      exportRaster(svg, format).catch((err) =>
-        window.alert(err instanceof Error ? err.message : 'Export échoué'),
-      )
-    }
   }
 
   return (
@@ -83,13 +73,10 @@ export function Toolbar({
       </ToolbarGroup>
 
       <ToolbarGroup>
-        <span className="pl-1 text-xs font-medium uppercase tracking-wide text-slate-400">
-          Export image
-        </span>
-        <ToolbarButton onClick={() => onExportImage('svg')}>SVG</ToolbarButton>
-        <ToolbarButton onClick={() => onExportImage('png')}>PNG</ToolbarButton>
-        <ToolbarButton onClick={() => onExportImage('jpeg')}>JPG</ToolbarButton>
+        <ToolbarButton onClick={() => setExportOpen(true)}>Export image…</ToolbarButton>
       </ToolbarGroup>
+
+      {exportOpen && <ExportDialog schema={schema} onClose={() => setExportOpen(false)} />}
     </div>
   )
 }

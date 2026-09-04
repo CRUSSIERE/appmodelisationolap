@@ -568,6 +568,7 @@ export function Canvas({
         onPointerCancel={endDrag}
       >
         <rect
+          data-export="background"
           x={origin.x}
           y={origin.y}
           width={bounds.width}
@@ -577,148 +578,153 @@ export function Canvas({
           onClick={onBackgroundClick}
         />
 
-        {/* fact-to-dimension connections, drawn first so they sit behind everything */}
-        {schema.facts.map((fact) => {
-          const { width } = factSize(fact)
-          return fact.dimensionIds.map((dimId) => {
-            const dim = schema.dimensions.find((d) => d.id === dimId)
-            if (!dim) return null
-            const dimTargetX = dim.position.x + layouts.get(dim.id)!.boxWidth / 2
-            // leave the box on the side the hierarchy does not occupy, so the
-            // link doesn't run straight through a downward-oriented dimension
-            const dimTargetY =
-              dim.orientation === 'down' ? dim.position.y : dim.position.y + DIM_HEIGHT
-            const factTopX = Math.min(Math.max(dimTargetX, fact.position.x), fact.position.x + width)
+        {/* everything the export frames: the background rect and the
+            marquee sit outside, so applyCrop measures the diagram alone */}
+        <g data-export="content">
+          {/* fact-to-dimension connections, drawn first so they sit behind everything */}
+          {schema.facts.map((fact) => {
+            const { width } = factSize(fact)
+            return fact.dimensionIds.map((dimId) => {
+              const dim = schema.dimensions.find((d) => d.id === dimId)
+              if (!dim) return null
+              const dimTargetX = dim.position.x + layouts.get(dim.id)!.boxWidth / 2
+              // leave the box on the side the hierarchy does not occupy, so the
+              // link doesn't run straight through a downward-oriented dimension
+              const dimTargetY =
+                dim.orientation === 'down' ? dim.position.y : dim.position.y + DIM_HEIGHT
+              const factTopX = Math.min(Math.max(dimTargetX, fact.position.x), fact.position.x + width)
+              return (
+                <line
+                  key={`link-${fact.id}-${dimId}`}
+                  x1={factTopX}
+                  y1={fact.position.y}
+                  x2={dimTargetX}
+                  y2={dimTargetY}
+                  stroke="#94a3b8"
+                  strokeWidth={1.5}
+                />
+              )
+            })
+          })}
+
+          {/* facts */}
+          {schema.facts.map((fact) => {
+            const { width, height } = factSize(fact)
+            const { x: fx, y: fy } = fact.position
+            const selected = selection.has(factKey(fact.id))
             return (
-              <line
-                key={`link-${fact.id}-${dimId}`}
-                x1={factTopX}
-                y1={fact.position.y}
-                x2={dimTargetX}
-                y2={dimTargetY}
-                stroke="#94a3b8"
-                strokeWidth={1.5}
+              <g key={fact.id}>
+                <rect
+                  x={fx}
+                  y={fy}
+                  width={width}
+                  height={height}
+                  fill="#1e293b"
+                  stroke={selected ? SELECTED_COLOR : '#0f172a'}
+                  strokeWidth={selected ? 3 : 1.5}
+                  rx={2}
+                  onPointerDown={(e) => startFactDrag(fact, e)}
+                  onClick={(e) => selectClick(factKey(fact.id), e)}
+                  onContextMenu={(e) => onFactContextMenu(fact, e)}
+                  className="cursor-move"
+                />
+                <text
+                  x={fx + width / 2}
+                  y={fy + 22 * s}
+                  textAnchor="middle"
+                  fill="#ffffff"
+                  fontWeight={700}
+                  fontSize={`${SCALE.factName}em`}
+                  onPointerDown={(e) => startFactDrag(fact, e)}
+                  onClick={(e) => selectClick(factKey(fact.id), e)}
+                  onDoubleClick={(e) =>
+                    startRename(e, fact.name, (name) =>
+                      dispatch({ type: 'RENAME_FACT', factId: fact.id, name }),
+                    )
+                  }
+                  onContextMenu={(e) => onFactContextMenu(fact, e)}
+                  className="cursor-move select-none"
+                >
+                  {fact.name}
+                </text>
+                {fact.measures.map((m, i) => (
+                  <g key={m.id}>
+                    <text
+                      x={fx + 12}
+                      y={fy + (42 + i * 20) * s}
+                      fill={selection.has(measureKey(fact.id, m.id)) ? '#93c5fd' : '#e2e8f0'}
+                      fontSize={`${SCALE.measure}em`}
+                      className="cursor-pointer"
+                      onClick={(e) => selectClick(measureKey(fact.id, m.id), e)}
+                      onDoubleClick={(e) =>
+                        startRename(e, m.name, (name) =>
+                          dispatch({
+                            type: 'RENAME_MEASURE',
+                            factId: fact.id,
+                            measureId: m.id,
+                            name,
+                          }),
+                        )
+                      }
+                      onContextMenu={(e) => onMeasureContextMenu(fact.id, m, e)}
+                    >
+                      {m.name}
+                    </text>
+                  </g>
+                ))}
+                <text
+                  x={fx + width / 2}
+                  y={fy + height - 6 * s}
+                  textAnchor="middle"
+                  fill="#93c5fd"
+                  fontSize={`${SCALE.measure}em`}
+                  data-export="chrome"
+                  className="cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    dispatch({ type: 'ADD_MEASURE', factId: fact.id })
+                  }}
+                >
+                  + mesure
+                </text>
+              </g>
+            )
+          })}
+
+          {schema.dimensions.map((dim) => {
+            const l = layouts.get(dim.id)!
+            return (
+              <DimensionNode
+                key={dim.id}
+                dim={dim}
+                layout={l}
+                selection={selection}
+                onDragStart={(e) => startDrag(dim, e)}
+                onParamDragStart={(paramId, e) => startParamDrag(dim, paramId, e)}
+                onWeakAttrDragStart={(paramId, waId, e) =>
+                  startWeakAttrDrag(dim, paramId, waId, e)
+                }
+                onChipDragStart={(hId, e) => startChipDrag(dim, hId, e)}
+                onDimContextMenu={(e) => onDimContextMenu(dim, e)}
+                onParamContextMenu={(paramId, e) => {
+                  const param = dim.parameters.find((p) => p.id === paramId)
+                  if (param) onParamContextMenu(dim, param, e)
+                }}
+                onWeakAttrContextMenu={(paramId, waId, e) => {
+                  const param = dim.parameters.find((p) => p.id === paramId)
+                  if (param) onWeakAttrContextMenu(dim, param, waId, e)
+                }}
+                onHierarchyContextMenu={(hId, e) => onHierarchyContextMenu(dim, hId, e)}
+                onEdgeContextMenu={(from, to, e) => onEdgeContextMenu(dim, from, to, e)}
+                onSelectClick={selectClick}
+                onRename={startRename}
+                dispatch={dispatch}
+                style={style}
+                showCardinalities={showCardinalities}
               />
             )
-          })
-        })}
-
-        {/* facts */}
-        {schema.facts.map((fact) => {
-          const { width, height } = factSize(fact)
-          const { x: fx, y: fy } = fact.position
-          const selected = selection.has(factKey(fact.id))
-          return (
-            <g key={fact.id}>
-              <rect
-                x={fx}
-                y={fy}
-                width={width}
-                height={height}
-                fill="#1e293b"
-                stroke={selected ? SELECTED_COLOR : '#0f172a'}
-                strokeWidth={selected ? 3 : 1.5}
-                rx={2}
-                onPointerDown={(e) => startFactDrag(fact, e)}
-                onClick={(e) => selectClick(factKey(fact.id), e)}
-                onContextMenu={(e) => onFactContextMenu(fact, e)}
-                className="cursor-move"
-              />
-              <text
-                x={fx + width / 2}
-                y={fy + 22 * s}
-                textAnchor="middle"
-                fill="#ffffff"
-                fontWeight={700}
-                fontSize={`${SCALE.factName}em`}
-                onPointerDown={(e) => startFactDrag(fact, e)}
-                onClick={(e) => selectClick(factKey(fact.id), e)}
-                onDoubleClick={(e) =>
-                  startRename(e, fact.name, (name) =>
-                    dispatch({ type: 'RENAME_FACT', factId: fact.id, name }),
-                  )
-                }
-                onContextMenu={(e) => onFactContextMenu(fact, e)}
-                className="cursor-move select-none"
-              >
-                {fact.name}
-              </text>
-              {fact.measures.map((m, i) => (
-                <g key={m.id}>
-                  <text
-                    x={fx + 12}
-                    y={fy + (42 + i * 20) * s}
-                    fill={selection.has(measureKey(fact.id, m.id)) ? '#93c5fd' : '#e2e8f0'}
-                    fontSize={`${SCALE.measure}em`}
-                    className="cursor-pointer"
-                    onClick={(e) => selectClick(measureKey(fact.id, m.id), e)}
-                    onDoubleClick={(e) =>
-                      startRename(e, m.name, (name) =>
-                        dispatch({
-                          type: 'RENAME_MEASURE',
-                          factId: fact.id,
-                          measureId: m.id,
-                          name,
-                        }),
-                      )
-                    }
-                    onContextMenu={(e) => onMeasureContextMenu(fact.id, m, e)}
-                  >
-                    {m.name}
-                  </text>
-                </g>
-              ))}
-              <text
-                x={fx + width / 2}
-                y={fy + height - 6 * s}
-                textAnchor="middle"
-                fill="#93c5fd"
-                fontSize={`${SCALE.measure}em`}
-                className="cursor-pointer"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  dispatch({ type: 'ADD_MEASURE', factId: fact.id })
-                }}
-              >
-                + mesure
-              </text>
-            </g>
-          )
-        })}
-
-        {schema.dimensions.map((dim) => {
-          const l = layouts.get(dim.id)!
-          return (
-            <DimensionNode
-              key={dim.id}
-              dim={dim}
-              layout={l}
-              selection={selection}
-              onDragStart={(e) => startDrag(dim, e)}
-              onParamDragStart={(paramId, e) => startParamDrag(dim, paramId, e)}
-              onWeakAttrDragStart={(paramId, waId, e) =>
-                startWeakAttrDrag(dim, paramId, waId, e)
-              }
-              onChipDragStart={(hId, e) => startChipDrag(dim, hId, e)}
-              onDimContextMenu={(e) => onDimContextMenu(dim, e)}
-              onParamContextMenu={(paramId, e) => {
-                const param = dim.parameters.find((p) => p.id === paramId)
-                if (param) onParamContextMenu(dim, param, e)
-              }}
-              onWeakAttrContextMenu={(paramId, waId, e) => {
-                const param = dim.parameters.find((p) => p.id === paramId)
-                if (param) onWeakAttrContextMenu(dim, param, waId, e)
-              }}
-              onHierarchyContextMenu={(hId, e) => onHierarchyContextMenu(dim, hId, e)}
-              onEdgeContextMenu={(from, to, e) => onEdgeContextMenu(dim, from, to, e)}
-              onSelectClick={selectClick}
-              onRename={startRename}
-              dispatch={dispatch}
-              style={style}
-              showCardinalities={showCardinalities}
-            />
-          )
-        })}
+          })}
+        </g>
 
         {marqueeRect && (
           <rect

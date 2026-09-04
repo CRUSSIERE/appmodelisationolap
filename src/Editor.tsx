@@ -32,6 +32,10 @@ export function Editor({
   useEffect(() => {
     if (!active) return
     function onKeyDown(e: KeyboardEvent) {
+      // a modal owns the keyboard while it is open: without this, Delete,
+      // Ctrl+D and Ctrl+Z still reach the diagram behind the dialog and
+      // silently edit it
+      if (document.querySelector('[role="dialog"]')) return
       const target = e.target as HTMLElement | null
       const isEditable =
         target instanceof HTMLInputElement ||
@@ -87,7 +91,6 @@ export function Editor({
       <Toolbar
         schema={schema}
         dispatch={dispatch}
-        svgRef={svgRef}
         undo={undo}
         redo={redo}
         canUndo={canUndo}
